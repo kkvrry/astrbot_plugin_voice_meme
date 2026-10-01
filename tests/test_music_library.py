@@ -58,6 +58,33 @@ def main():
     check("空目录 random 返回 None", single.random() is None)
     check("空目录 match 返回空", single.match("晴天") == [])
 
+    # ---- 排除目录 / 子目录随机 ----
+    excl_dir = os.path.join(TMP, "Playlists")
+    light_dir = os.path.join(TMP, "轻音乐")
+    os.makedirs(excl_dir)
+    os.makedirs(light_dir)
+    open(os.path.join(excl_dir, "歌单缓存 - A.mp3"), "wb").close()
+    open(os.path.join(light_dir, "班得瑞 - 安静.mp3"), "wb").close()
+
+    lib2 = MusicLibrary(TMP, exclude_dirs=["Playlists"])
+    check("排除目录不被扫描", len(lib2) == 5, f"count={len(lib2)}")
+    check("排除目录歌曲不可匹配", lib2.match("歌单缓存") == [])
+
+    lib3 = MusicLibrary(TMP)
+    check("未配置排除时包含该目录", len(lib3) == 6, f"count={len(lib3)}")
+
+    check("subdirs 列出顶层目录", set(lib2.subdirs()) >= {"华语", "轻音乐"},
+          f"{lib2.subdirs()}")
+    check("resolve_subdir 归一化命中", lib2.resolve_subdir("轻 音乐") == "轻音乐")
+    check("resolve_subdir 未知名返回 None", lib2.resolve_subdir("不存在") is None)
+
+    pick = lib2.random("轻音乐")
+    check("限定子目录随机", pick is not None and "轻音乐" in pick,
+          f"{pick}")
+    pick = lib2.random("Playlists")
+    check("限定排除目录随机为空池兜底", pick is None or "Playlists" not in pick,
+          f"{pick}")
+
     shutil.rmtree(TMP, ignore_errors=True)
     n_fail = sum(1 for _, ok, _ in RESULTS if not ok)
     print(f"\n{len(RESULTS) - n_fail}/{len(RESULTS)} passed")

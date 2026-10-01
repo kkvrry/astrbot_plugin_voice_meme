@@ -18,9 +18,12 @@ class MusicLibrary:
                   ".ape", ".wma", ".opus"}
     SCAN_TTL = 30  # 秒。网络盘（SMB）目录扫描有开销，带 TTL 缓存
 
-    def __init__(self, root: str, recent_size: int = 32):
+    def __init__(self, root: str, recent_size: int = 32,
+                 exclude_dirs: list | None = None):
         self.root = os.path.abspath(root)
         self.recent = deque(maxlen=recent_size)  # 最近播放，随机时避开
+        # 排除的子目录名（按目录名匹配，任意层级）
+        self.exclude_dirs = {self._norm(d) for d in (exclude_dirs or []) if d}
         self._files = []          # 缓存的文件列表
         self._scanned_at = 0.0
 
@@ -28,7 +31,10 @@ class MusicLibrary:
 
     def _rescan(self):
         files = []
-        for dirpath, _dirs, names in os.walk(self.root):
+        for dirpath, dirs, names in os.walk(self.root):
+            # 剪枝：跳过被排除的子目录（不进入）
+            dirs[:] = [d for d in dirs
+                       if self._norm(d) not in self.exclude_dirs]
             for name in names:
                 if os.path.splitext(name)[1].lower() in self.AUDIO_EXTS:
                     files.append(os.path.join(dirpath, name))
@@ -86,11 +92,39 @@ class MusicLibrary:
 
     # ------------------------------------------------------------ 随机
 
-    def random(self) -> str:
-        """随机选一首，避开最近播放过的；曲库为空返回 None。"""
-        pool = [p for p in self.files if p not in self.recent]
+    def subdirs(self) -> list:
+        """曲库根目录下含音频文件的子目录名（去重排序，供「随机音乐 <目录>」提示）。"""
+        seen = []
+        for p in self.files:
+            rel = os.path.relpath(os.path.dirname(p), self.root)
+            if rel not in (".", ".."):
+                top = rel.split(os.sep)[0]
+                if top not in seen:
+                    seen.append(top)
+        return sorted(seen)
+
+    def resolve_subdir(self, name: str) -> str | None:
+        """把用户输入的目录名解析为曲库内实际子目录（归一化精确匹配，含嵌套路径）。"""
+        if not name:
+            return None
+        target = self._norm(name)
+        for top in self.subdirs():
+            if self._norm(top) == target:
+                return top
+        return None
+
+    def random(self, subdir: str | None = None) -> str:
+        """随机选一首，避开最近播放过的；可限定子目录。曲库为空返回 None。"""
+        pool = self.files
+        if subdir:
+            prefix = os.path.join(self.root, subdir) + os.sep
+            pool = [p for p in pool if p.startswith(prefix)]
+        pool = [p for p in pool if p not in self.recent]
         if not pool:
-            pool = self.files
+            full = [p for p in self.files
+                    if not subdir or p.startswith(
+                        os.path.join(self.root, subdir) + os.sep)]
+            pool = full
         if not pool:
             return None
         path = random.choice(pool)

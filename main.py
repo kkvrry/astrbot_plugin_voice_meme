@@ -42,7 +42,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.7.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -118,11 +118,32 @@ class SgsVoiceMeme(Star):
             self._music_lib = MusicLibrary(self.music_dir)
         return self._music_lib
 
-    async def _handle_music(self, event: AstrMessageEvent, query: str | None,
-                            full: bool = False):
-        """「点歌 <歌名>」/「随机音乐」：定位副歌起点，裁剪至最大时长后发送。
+    def _get_music_lib(self):
+        if MusicLibrary is None or not self.music_dir:
+            return None
+        if self._music_lib is None or self._music_lib.root != os.path.abspath(self.music_dir):
+            self._music_lib = MusicLibrary(self.music_dir,
+                                           exclude_dirs=self.music_exclude_dirs)
+        return self._music_lib
 
-        full=True（「点歌完整 <歌名>」）时跳过分析，直接发送完整歌曲文件。
+    def _resolve_music_subdir(self, lib, name: str) -> str | None:
+        """「随机音乐 <目录>」的目录解析：轻音乐别名 → 配置目录，其余按子目录名匹配。"""
+        if not name:
+            return None
+        if self._norm_light == self._norm_text(name) and self.music_light_dir:
+            name = self.music_light_dir
+        return lib.resolve_subdir(name)
+
+    @staticmethod
+    def _norm_text(s: str) -> str:
+        return re.sub(r"[\s　]+", "", s or "").lower()
+
+    async def _handle_music(self, event: AstrMessageEvent, query: str | None,
+                            full: bool = False, subdir: str | None = None):
+        """「音乐 <歌名>」/「随机音乐 [目录]」：定位副歌起点，裁剪至最大时长后发送。
+
+        full=True（「完整音乐 <歌名>」）时跳过分析，直接发送完整歌曲文件。
+        subdir 限定随机/匹配的子目录。
         """
         self.trigger_count += 1
         if not _MUSIC_OK:
@@ -140,8 +161,12 @@ class SgsVoiceMeme(Star):
         # 选曲
         if query:
             matches = lib.match(query)
+            if subdir:  # 限定子目录内匹配
+                prefix = os.path.join(lib.root, subdir) + os.sep
+                matches = [(p, s) for p, s in matches if p.startswith(prefix)]
             if not matches:
-                yield event.plain_result(f"❌ 曲库里没找到「{query}」，试试更完整的歌名。")
+                hint = f"（目录「{subdir}」内）" if subdir else ""
+                yield event.plain_result(f"❌ 曲库里没找到「{query}」{hint}，试试更完整的歌名。")
                 return
             # 仅一个候选，或首名得分明显领先时直接播；并列歧义则列出让用户选
             if len(matches) == 1 or matches[0][1] > matches[1][1]:
@@ -149,19 +174,23 @@ class SgsVoiceMeme(Star):
             else:
                 names = [f"{i}. {os.path.splitext(os.path.basename(p))[0]}"
                          for i, (p, _) in enumerate(matches, 1)]
-                yield event.plain_result("🎵 找到多首匹配，请更精确地点歌：\n" + "\n".join(names))
+                yield event.plain_result("🎵 找到多首匹配，请更精确地选择：\n" + "\n".join(names))
                 return
         else:
-            song_path = lib.random()
+            song_path = lib.random(subdir)
             if not song_path:
-                yield event.plain_result("❌ 音乐目录里没有找到音频文件。")
+                hint = f"（目录「{subdir}」）" if subdir else ""
+                yield event.plain_result(f"❌ 该范围{hint}里没有找到音频文件。")
                 return
 
         stem = os.path.splitext(os.path.basename(song_path))[0]
+        src = ("随机" if not query else ("完整" if full else "点播"))
+        if subdir:
+            src += f"·{subdir}"
 
         # 完整文件模式：跳过副歌分析，直接以文件形式发送原曲
         if full:
-            logger.info(f"[通用语音] 完整点歌: {stem}")
+            logger.info(f"[通用语音] 完整音乐: {stem}")
             yield event.plain_result(f"📀 正在发送完整歌曲：{stem}")
             try:
                 yield event.chain_result([
@@ -172,7 +201,7 @@ class SgsVoiceMeme(Star):
                 yield event.plain_result("❌ 完整歌曲发送失败。")
             return
 
-        logger.info(f"[通用语音] 音乐点播: {stem} (来源: {'点歌' if query else '随机'})")
+        logger.info(f"[通用语音] 音乐播放: {stem} (来源: {src})")
         yield event.plain_result(f"🎵 副歌提取中：{stem}（首次解析需要几秒~几十秒）")
 
         try:
@@ -227,6 +256,9 @@ class SgsVoiceMeme(Star):
         self.music_dir = str(self.config.get("music_dir", "") or "").strip()
         self.music_clip_max_sec = max(10, min(300, int(
             self.config.get("music_clip_max_sec", 60) or 60)))
+        excl = self.config.get("music_exclude_dirs", []) or []
+        self.music_exclude_dirs = [str(d) for d in excl if str(d).strip()]
+        self.music_light_dir = str(self.config.get("music_light_dir", "") or "").strip()
 
     def _cleanup_cache(self):
         """清理缓存：删除源文件已不存在的 WAV 缓存（孤儿缓存），以及超期的合并缓存"""
@@ -315,12 +347,28 @@ class SgsVoiceMeme(Star):
         voice_infos = []  # [(role_name, voice_text, path), ...]
         trigger_keyword = ""
 
-        # ---- 功能: 音乐点播 / 随机音乐（走副歌裁剪通道，优先于语音匹配）----
-        # 音乐点播 / 随机音乐入口
-        music_random = message in ("随机音乐", "随机歌曲", "来首歌", "点歌")
-        full_match = re.match(r"^点歌完整\s+(.+)$", message)
-        music_match = re.match(r"^点歌\s+(.+)$", message)
-        if music_random or music_match or full_match:
+        # ---- 功能: 音乐（点播/随机/完整，走副歌裁剪通道，优先于语音匹配）----
+        #   随机音乐 [目录] / 音乐 / 音乐 <歌名> / 完整音乐 <歌名>
+        music_random_bare = message in ("随机音乐", "音乐")
+        rand_match = re.match(r"^随机音乐\s+(.+)$", message)
+        full_match = re.match(r"^完整音乐\s+(.+)$", message)
+        music_match = re.match(r"^音乐\s+(.+)$", message)
+        if music_random_bare or rand_match or music_match or full_match:
+            if rand_match and not full_match:
+                # 随机音乐 <目录>：目录为子目录名或「轻音乐」别名
+                lib = self._get_music_lib()
+                subdir = self._resolve_music_subdir(lib, rand_match.group(1)) if lib else None
+                if subdir is None:
+                    tips = "、".join(lib.subdirs()) if lib else ""
+                    yield event.plain_result(
+                        f"❌ 没有这个音乐目录。可用：{tips or '（曲库无子目录）'}\n"
+                        f"用法：随机音乐 <目录名>，如「随机音乐 古风」")
+                    event.stop_event()
+                    return
+                async for r in self._handle_music(event, None, subdir=subdir):
+                    yield r
+                event.stop_event()
+                return
             m = full_match or music_match
             query = m.group(1).strip() if m else None
             async for r in self._handle_music(event, query, full=bool(full_match)):
@@ -482,7 +530,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.7.0
+        help_text = f"""🎭 通用语音插件 v1.8.0
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
@@ -493,9 +541,10 @@ class SgsVoiceMeme(Star):
 6. 关键词匹配（含模糊匹配，阈值: {self.fuzzy_threshold*100:.0f}%）
 7. 多语音库：voice/ 下自动识别 + 配置额外库目录（extra_lib_dirs），
    角色重名时可用「库名+角色名」精确点播（如：三国杀曹操3）
-8. 「随机音乐」随机播放曲库歌曲的副歌片段（music_dir）
-9. 「点歌 <歌名>」点播歌曲，从副歌开始裁剪（上限 music_clip_max_sec 秒）
-10. 「点歌完整 <歌名>」以文件形式发送完整歌曲（不经裁剪）
+8. 「随机音乐 [目录]」随机播放曲库副歌片段，可指定子目录（如：随机音乐 古风），
+   「轻音乐」为配置的别名目录（music_light_dir）
+9. 「音乐 <歌名>」点播歌曲，从副歌开始裁剪（上限 music_clip_max_sec 秒）
+10. 「完整音乐 <歌名>」以文件形式发送完整歌曲（不经裁剪）
 
 当前状态：
 • 触发模式: {prefix_mode}
