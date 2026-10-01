@@ -34,6 +34,7 @@ FPS_RESAMPLE = 1    # 自相似矩阵降到 1 秒/帧，4 分钟歌矩阵只有 
 MIN_SEG_SEC = 12    # 副歌段最短时长
 NOVELTY_KERNEL = 16 # Foote checkerboard 半窗（秒）
 SEG_SIM_THRESHOLD = 0.92   # 段落判为"同一段"的 mean-chroma 余弦阈值
+MIN_CLIP_SEC = 25          # 成品最短时长：在此之后寻找第一个自然气口收尾
 GAP_SEARCH_SEC = 3.0       # 切点吸附搜索半径
 LEAD_IN_SEC = 0.5          # 起点前预留量：吸附到气口后再往前退一点，避免从唱词中间起头
 FADE_SEC = 0.1             # 淡入淡出时长
@@ -181,16 +182,18 @@ def _analyze_structure(y: np.ndarray) -> dict:
     if best is None:
         return {}
 
-    # 副歌起点：该组内能量达标（≥ 组内峰值 75%）的最早出现位置。
-    # 前奏常铺副歌和弦，mean-chroma 无法区分，但前奏编排稀疏能量低，
-    # 用能量过滤可避免把歌曲开头误判为副歌（真实曲库冒烟测得的坑）。
+    # 副歌起点：取"能量达标组"里能量最高的一次出现（高潮感最强），
+    # 而非首次出现——前奏常铺副歌和弦（mean-chroma 无法区分）且能量可能不低，
+    # 取最高能量 + 跳过开头 8% 的前奏区，可避免起点落在前奏/主歌（真实曲库冒烟测得的坑）
     members = [s for s in segs
                if float(s["feat"] @ best["feat"]) > SEG_SIM_THRESHOLD]
     loud = [s for s in members if s["energy"] >= best["energy"] * 0.75]
     ref = loud if loud else members
-    start = min(s["a"] for s in ref)
+    total = segs[-1]["b"] if segs else 0
+    pool = [s for s in ref if s["a"] >= total * 0.08] or ref
+    start = max(pool, key=lambda s: s["energy"])["a"]
     end = max(s["b"] for s in ref)
-    # 副歌首次出现段的自然结束（该段边界），裁剪时长以它为准
+    # 副歌首次出现段的自然结束（仅作参考信息，收尾长度由气口检测决定）
     first = min(ref, key=lambda s: s["a"])
     return {"start": float(start), "end": float(end),
             "first_end": float(first["b"])}
@@ -201,22 +204,58 @@ def _analyze_structure(y: np.ndarray) -> dict:
 def _analyze_energy(y: np.ndarray, duration: float = 30.0) -> dict:
     """最响窗口作为副歌近似（无 librosa 时的兜底）。
 
-    窗口时长跟随配置的裁剪上限 duration（15~90 秒），不再固定 30 秒。
-    y 为 1s 聚合后的能量序列时更稳。
+    分析窗固定 30 秒（定位用，与裁剪时长解耦——收尾长度由气口检测决定）；
+    起点从窗口起点向前回退到"持续响度起点"，避免落在乐句中间。
     """
     per_sec = SR
     n = len(y) // per_sec
     if n < 40:
         return {}
-    win = int(max(15, min(duration, 90)))
-    win = min(win, n - 1)
     env = np.abs(y[: n * per_sec]).reshape(n, per_sec).mean(axis=1)
+    win = 30
     energy = np.convolve(env, np.ones(win) / win, mode="valid")
     peak = int(np.argmax(energy))
-    return {"start": float(peak), "end": float(peak + win)}
+    # 起点细化：向前回退到能量跌破区域均值 60% 的位置，其下一秒即持续响度起点
+    region = float(env[peak:peak + win].mean()) + 1e-9
+    s = peak
+    while s > 0 and env[s] >= region * 0.6:
+        s -= 1
+    s = min(s + 1, peak)
+    return {"start": float(s), "end": float(s + win)}
 
 
 # ---------------------------------------------------------------- 气口吸附
+
+def _find_valley_end(y: np.ndarray, start: float, min_len: float,
+                     max_len: float):
+    """在 [start+min_len, start+max_len] 内找第一个持续的能量低谷作为收尾切点。
+
+    低谷 = 20ms 粗包络（300ms 平滑）持续 ≥0.4s 低于区域参考值的谷；
+    深度阈值从严格到宽松逐级放宽（25%/35%/45%），取最早的满足项。
+    返回谷底时间（秒），找不到返回 None。
+    """
+    frame = SR // 50
+    i0 = int((start + min_len) * SR)
+    i1 = min(len(y), int((start + max_len) * SR))
+    if i1 - i0 < SR:
+        return None
+    seg = np.abs(y[i0:i1])
+    n = (len(seg) // frame) * frame
+    env = seg[:n].reshape(-1, frame).mean(axis=1)
+    k = max(3, int(0.3 * 50))     # 300ms 平滑
+    env = np.convolve(env, np.ones(k) / k, mode="same")
+    ref = np.percentile(env, 90) + 1e-9
+    for frac in (0.25, 0.35, 0.45):
+        idx = np.where(env < ref * frac)[0]
+        if not len(idx):
+            continue
+        groups = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
+        runs = [g for g in groups if len(g) >= 20]   # 持续 ≥0.4s
+        if runs:
+            g = runs[0]              # 最早出现的满足项
+            return (i0 + int(g[int(np.argmin(env[g]))]) * frame) / SR
+    return None
+
 
 def _snap_to_gap(y: np.ndarray, t_sec: float, before_only: bool = False) -> float:
     """在 t_sec 附近找能量包络最低点（换气/乐句间隙）作为切点。
@@ -260,8 +299,8 @@ def find_chorus_clip(path: str, duration: float = 30.0,
                 os.path.abspath(__file__)))), "cache_clip")
     os.makedirs(cache_dir, exist_ok=True)
 
-    # 1. 分析缓存（v3：起点前预留 + 能量窗口随时长）
-    akey = _file_key(path, "v3")
+    # 1. 分析缓存（v5：起点取能量最高副歌 + 气口收尾）
+    akey = _file_key(path, "v5")
     info = _load_json_cache(cache_dir, akey)
     method = info.get("method") if info else None
 
@@ -293,15 +332,16 @@ def find_chorus_clip(path: str, duration: float = 30.0,
         # 再往前预留 LEAD_IN_SEC，让副歌人声自然进入，而不是从唱词中间开始
         start = _snap_to_gap(y, max(0.0, info["start"]), before_only=True)
         start = max(0.0, start - LEAD_IN_SEC)
-        # 裁剪时长按副歌段的自然长度：结构路线取副歌首次出现段（first_end），
-        # 能量路线取其最响窗口（info["end"]）；music_clip_max_sec 仅作硬上限
-        end_t = start + duration
-        natural = info.get("first_end") or info.get("end")
-        if natural and natural > start + 5.0:
-            end_t = min(end_t, float(natural))
-        # 结尾只向前吸附：切点始终不越过 end_t
-        end = _snap_to_gap(y, end_t, before_only=True)
-        end = min(end, len(y) / SR, start + duration)
+        # 收尾长度由真实段落气口决定：在 [start+MIN_CLIP_SEC, start+duration]
+        # 内找第一个持续低谷（乐句/段落间隙），长度随歌自然变化；
+        # 找不到才退化为"起点+上限"并向前吸附气口。music_clip_max_sec 为硬上限
+        lo = min(MIN_CLIP_SEC, duration)
+        valley = _find_valley_end(y, start, lo, duration)
+        if valley:
+            end = min(valley, start + duration)
+        else:
+            end = _snap_to_gap(y, start + duration, before_only=True)
+        end = min(end, len(y) / SR)
         if end - start < 5.0:      # 音频本身比设定时长还短，能切多少切多少
             end = len(y) / SR
         info.update(start=round(start, 3), end=round(end, 3), snapped=True)
