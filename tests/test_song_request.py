@@ -40,8 +40,8 @@ def main():
     r = parse("给某人来一首")
     check("缺歌名不匹配", r is None, f"{r}")
 
-    r = parse("来一首晴天")
-    check("无「给」不匹配", r is None, f"{r}")
+    r = parse("来一首")
+    check("裸句式缺歌名不匹配", r is None, f"{r}")
 
     r = parse("给你的约定一直记在心里")
     check("含「给」的长句不误伤", r is None, f"{r}")
