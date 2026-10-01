@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 通用语音玩梗插件 — 入口
-事件路由、/v 管理指令与发送编排放这里；能力实现拆在 xgs_voice/ 包内：
+事件路由、/v 管理指令与发送编排放这里；能力实现拆在 core/ 包内：
   constants.py      常量（LLM 唤醒词）
   voice_manager.py  语音库扫描与匹配
   audio_tools.py    WAV 转换缓存 / 多段合并（ffmpeg）
@@ -22,19 +22,19 @@ from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import AstrBotConfig, logger
 import astrbot.api.message_components as Comp
 
-# 保证插件根目录在 sys.path 中，xgs_voice 包可被稳定导入（不依赖加载器的行为）
+# 保证插件根目录在 sys.path 中，core 包可被稳定导入（不依赖加载器的行为）
 _PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
-from xgs_voice import audio_tools, llm_gate, role_image
-from xgs_voice.voice_manager import VoiceManager
-from xgs_voice.constants import DEFAULT_LLM_PATTERNS
+from core import audio_tools, llm_gate, role_image
+from core.voice_manager import VoiceManager
+from core.constants import DEFAULT_LLM_PATTERNS
 
 # 音乐点播依赖：numpy 缺失时仅禁用音乐功能，不影响语音主体
 try:
-    from xgs_voice.music import clip as song_clip
-    from xgs_voice.music.library import MusicLibrary
+    from core.music import clip as song_clip
+    from core.music.library import MusicLibrary
     _MUSIC_OK = getattr(song_clip, "_HAS_NUMPY", False)
 except Exception:
     song_clip = None
@@ -90,7 +90,7 @@ class SgsVoiceMeme(Star):
         logger.info(f"[通用语音] 语音库: {self.voice_manager.category_order}")
         logger.info(f"[通用语音] 数据目录: {self.data_dir}")
 
-    # ---- 音频工具（薄封装，实现在 xgs_voice/audio_tools.py）----
+    # ---- 音频工具（薄封装，实现在 core/audio_tools.py）----
 
     def _wav_cache_path(self, audio_path: str) -> str:
         return audio_tools.wav_cache_path(self.data_dir, self.base_dir, audio_path)
@@ -272,13 +272,13 @@ class SgsVoiceMeme(Star):
             logger.error(f"[通用语音] 缓存清理失败: {e}")
 
     def _needs_llm_response(self, message: str, event: AstrMessageEvent) -> bool:
-        """判断消息是否需要 LLM 回复（实现在 xgs_voice/llm_gate.py）"""
+        """判断消息是否需要 LLM 回复（实现在 core/llm_gate.py）"""
         return llm_gate.needs_llm_response(
             message, event, self.need_llm_patterns,
             self.wake_word_prefix, self.private_chat_llm_mode)
 
     def _generate_role_list_image(self, category=None):
-        """生成角色列表图片（缓存签名判断在此，绘制在 xgs_voice/role_image.py）"""
+        """生成角色列表图片（缓存签名判断在此，绘制在 core/role_image.py）"""
         if category:
             role_names = list(self.voice_manager.categories.get(category, {}).keys())
         else:

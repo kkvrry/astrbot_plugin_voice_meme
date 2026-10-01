@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from xgs_voice.music.library import MusicLibrary  # noqa: E402
+from core.music.library import MusicLibrary  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="music_lib_test_")
 RESULTS = []

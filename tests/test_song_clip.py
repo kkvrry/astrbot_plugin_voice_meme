@@ -18,7 +18,7 @@ import tempfile
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import xgs_voice.music.clip as song_clip  # noqa: E402
+import core.music.clip as song_clip  # noqa: E402
 
 SR = 22050
 TMP = tempfile.mkdtemp(prefix="song_clip_test_")
