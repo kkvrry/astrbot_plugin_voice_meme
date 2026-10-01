@@ -40,7 +40,7 @@ FADE_SEC = 0.06            # 淡入淡出时长
 # 输出格式预设：与插件既有 _get_wav_path 约定对齐
 OUT_FORMATS = {
     "wav": ["-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000"],
-    "mp3": ["-acodec", "libmp3lame", "-ab", "128k", "-ar", "44100", "-ac", "2"],
+    "mp3": ["-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100", "-ac", "2"],
 }
 
 try:
@@ -189,7 +189,10 @@ def _analyze_structure(y: np.ndarray) -> dict:
     ref = loud if loud else members
     start = min(s["a"] for s in ref)
     end = max(s["b"] for s in ref)
-    return {"start": float(start), "end": float(end)}
+    # 副歌首次出现段的自然结束（该段边界），裁剪时长以它为准
+    first = min(ref, key=lambda s: s["a"])
+    return {"start": float(start), "end": float(end),
+            "first_end": float(first["b"])}
 
 
 # ---------------------------------------------------------------- 能量兜底（无 librosa）
@@ -251,8 +254,8 @@ def find_chorus_clip(path: str, duration: float = 30.0,
                 os.path.abspath(__file__)))), "cache_clip")
     os.makedirs(cache_dir, exist_ok=True)
 
-    # 1. 分析缓存
-    akey = _file_key(path, "v1")
+    # 1. 分析缓存（v2：新增 first_end 自然段尾 + mp3 192k）
+    akey = _file_key(path, "v2")
     info = _load_json_cache(cache_dir, akey)
     method = info.get("method") if info else None
 
@@ -281,9 +284,14 @@ def find_chorus_clip(path: str, duration: float = 30.0,
     else:
         y, _ = _decode_raw(path)
         start = _snap_to_gap(y, max(0.0, info["start"]))
-        # 结尾只向前吸附：切点始终不越过 start + duration（最大时长约束），
-        # 允许越过副歌段继续向后补足时长，但不超过设定值
-        end = _snap_to_gap(y, start + duration, before_only=True)
+        # 裁剪时长按副歌段的自然长度：结构路线取副歌首次出现段（first_end），
+        # 能量路线取其 30 秒窗口（info["end"]）；music_clip_max_sec 仅作硬上限
+        end_t = start + duration
+        natural = info.get("first_end") or info.get("end")
+        if natural and natural > start + 5.0:
+            end_t = min(end_t, float(natural))
+        # 结尾只向前吸附：切点始终不越过 end_t
+        end = _snap_to_gap(y, end_t, before_only=True)
         end = min(end, len(y) / SR)
         if end - start < 5.0:      # 音频本身比设定时长还短，能切多少切多少
             end = len(y) / SR
@@ -291,7 +299,7 @@ def find_chorus_clip(path: str, duration: float = 30.0,
         _save_json_cache(cache_dir, akey, info)
 
     # 3. 成品缓存
-    ckey = _file_key(path, "clip_v1", round(start, 2), round(end, 2), out_format)
+    ckey = _file_key(path, "clip_v2", round(start, 2), round(end, 2), out_format)
     clip_path = os.path.join(cache_dir, ckey + "." + out_format)
     if not os.path.exists(clip_path):
         eff_dur = max(1.0, end - start)

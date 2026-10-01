@@ -370,6 +370,12 @@ class VoiceManager:
         """
         message = message.lower()
 
+        # 消息比最小关键词还短（如精确选择列表时输入的「1」）不参与匹配：
+        # 关键词本身已按 min_keyword_len 过滤，短消息不可能与关键词相等，
+        # 只会经「消息包含于关键词」分支误命中含该字符的台词
+        if len(message) < self.min_keyword_len:
+            return None
+
         # 1+2. 双向包含，择优而非随机
         hits = []  # (overlap_len, priority, path, keyword)
         for kw, p in self.keyword_map:
