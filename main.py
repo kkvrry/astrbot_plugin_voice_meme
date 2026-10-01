@@ -12,6 +12,16 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.star import StarTools
 import astrbot.api.message_components as Comp
 
+# 音乐点播依赖：numpy 缺失时仅禁用音乐功能，不影响语音主体
+try:
+    import song_clip
+    from music_library import MusicLibrary
+    _MUSIC_OK = getattr(song_clip, "_HAS_NUMPY", False)
+except Exception:
+    song_clip = None
+    MusicLibrary = None
+    _MUSIC_OK = False
+
 # 默认 LLM 唤醒词列表（模块级常量）
 DEFAULT_LLM_PATTERNS = [
     r'[?？]',
@@ -512,8 +522,13 @@ class SgsVoiceMeme(Star):
         self._role_list_img_path = os.path.join(self.data_dir, "role_list_cache.png")
         self._role_list_signature = ""  # 缓存时的音频库签名
 
+        # 音乐曲库（惰性创建，reload 时置空重建）
+        self._music_lib = None
+        self._music_clip_dir = os.path.join(self.data_dir, "cache_clip")
+
         # 清理过期音频缓存
         self._cleanup_cache()
+        self._cleanup_music_cache()
 
         logger.info(f"[通用语音] 插件初始化完成！")
         logger.info(f"[通用语音] 语音库: {self.voice_manager.category_order}")
@@ -633,6 +648,98 @@ class SgsVoiceMeme(Star):
             logger.error(f"[通用语音] 音频合并失败: {e}")
             return None
 
+    # ================================================================
+    # 音乐点播（副歌裁剪通道）
+    # ================================================================
+
+    def _music_ready(self) -> bool:
+        return (_MUSIC_OK and song_clip is not None
+                and self.music_dir and os.path.isdir(self.music_dir))
+
+    def _get_music_lib(self):
+        if MusicLibrary is None or not self.music_dir:
+            return None
+        if self._music_lib is None or self._music_lib.root != os.path.abspath(self.music_dir):
+            self._music_lib = MusicLibrary(self.music_dir)
+        return self._music_lib
+
+    async def _handle_music(self, event: AstrMessageEvent, query: str | None):
+        """「点歌 <歌名>」/「随机音乐」：定位副歌起点，裁剪至最大时长后发送。"""
+        self.trigger_count += 1
+        if not _MUSIC_OK:
+            yield event.plain_result("❌ 音乐功能依赖 numpy/librosa，当前运行环境缺失，请联系管理员安装。")
+            return
+        if not self.music_dir or not os.path.isdir(self.music_dir):
+            yield event.plain_result("❌ 音乐功能未启用：未配置有效的音乐目录（music_dir）。")
+            return
+
+        lib = self._get_music_lib()
+        if lib is None or len(lib) == 0:
+            yield event.plain_result("❌ 音乐目录里没有找到音频文件。")
+            return
+
+        # 选曲
+        if query:
+            matches = lib.match(query)
+            if not matches:
+                yield event.plain_result(f"❌ 曲库里没找到「{query}」，试试更完整的歌名。")
+                return
+            # 仅一个候选，或首名得分明显领先时直接播；并列歧义则列出让用户选
+            if len(matches) == 1 or matches[0][1] > matches[1][1]:
+                song_path = matches[0][0]
+            else:
+                names = [f"{i}. {os.path.splitext(os.path.basename(p))[0]}"
+                         for i, (p, _) in enumerate(matches, 1)]
+                yield event.plain_result("🎵 找到多首匹配，请更精确地点歌：\n" + "\n".join(names))
+                return
+        else:
+            song_path = lib.random()
+            if not song_path:
+                yield event.plain_result("❌ 音乐目录里没有找到音频文件。")
+                return
+
+        stem = os.path.splitext(os.path.basename(song_path))[0]
+        logger.info(f"[通用语音] 音乐点播: {stem} (来源: {'点歌' if query else '随机'})")
+        yield event.plain_result(f"🎵 副歌提取中：{stem}（首次解析需要几秒~几十秒）")
+
+        try:
+            result = await asyncio.to_thread(
+                song_clip.find_chorus_clip, song_path,
+                float(self.music_clip_max_sec), "mp3", self._music_clip_dir,
+            )
+        except Exception as e:
+            logger.error(f"[通用语音] 副歌提取异常: {e}")
+            result = None
+        if not result or not os.path.isfile(result["clip_path"]):
+            yield event.plain_result(f"❌「{stem}」副歌提取失败，稍后再试试。")
+            return
+
+        clip_path = result["clip_path"]
+        try:
+            yield event.chain_result([Comp.Record(file=clip_path, url=clip_path)])
+        except Exception as e:
+            # 个别平台只认 WAV：回落到既有 _get_wav_path 转换通道重发一次
+            logger.warning(f"[通用语音] mp3 直发失败，转 WAV 重试: {e}")
+            try:
+                wav_path = self._get_wav_path(clip_path)
+                yield event.chain_result([Comp.Record(file=wav_path, url=wav_path)])
+            except Exception as e2:
+                logger.error(f"[通用语音] 音乐发送失败: {e2}")
+                yield event.plain_result("❌ 音乐片段发送失败。")
+
+    def _cleanup_music_cache(self):
+        """清理副歌片段/分析缓存：按 cache_max_days 过期删除（0 为关闭清理）。"""
+        if self.cache_max_days <= 0 or not os.path.isdir(self._music_clip_dir):
+            return
+        cutoff = time.time() - self.cache_max_days * 86400
+        for f in os.listdir(self._music_clip_dir):
+            p = os.path.join(self._music_clip_dir, f)
+            try:
+                if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                    os.remove(p)
+            except OSError:
+                pass
+
     def _load_config(self):
         """从配置对象加载设置"""
         self.need_llm_patterns = self.config.get("llm_wake_patterns", DEFAULT_LLM_PATTERNS)
@@ -643,6 +750,10 @@ class SgsVoiceMeme(Star):
         self.fuzzy_threshold = self.config.get("fuzzy_threshold", 0.6)
         self.min_keyword_len = max(1, int(self.config.get("min_keyword_len", 2) or 2))
         self.cache_max_days = max(0, int(self.config.get("cache_max_days", 30) or 30))
+        # 音乐点播配置
+        self.music_dir = str(self.config.get("music_dir", "") or "").strip()
+        self.music_clip_max_sec = max(10, min(300, int(
+            self.config.get("music_clip_max_sec", 60) or 60)))
 
     def _cleanup_cache(self):
         """清理缓存：删除源文件已不存在的 WAV 缓存（孤儿缓存），以及超期的合并缓存"""
@@ -895,6 +1006,16 @@ class SgsVoiceMeme(Star):
         voice_infos = []  # [(role_name, voice_text, path), ...]
         trigger_keyword = ""
 
+        # ---- 功能: 音乐点播 / 随机音乐（走副歌裁剪通道，优先于语音匹配）----
+        music_random = message in ("随机音乐", "随机歌曲", "来首歌", "点歌")
+        music_match = re.match(r"^点歌\s+(.+)$", message)
+        if music_random or music_match:
+            query = music_match.group(1).strip() if music_match else None
+            async for r in self._handle_music(event, query):
+                yield r
+            event.stop_event()
+            return
+
         # ---- 功能: 随机台词+数字 ----
         random_match = re.match(r'^随机台词\s*(\d+)$', message)
         if random_match:
@@ -1060,6 +1181,8 @@ class SgsVoiceMeme(Star):
 6. 关键词匹配（含模糊匹配，阈值: {self.fuzzy_threshold*100:.0f}%）
 7. 多语音库：voice/ 下自动识别 + 配置额外库目录（extra_lib_dirs），
    角色重名时可用「库名+角色名」精确点播（如：三国杀曹操3）
+8. 「随机音乐」随机播放曲库歌曲的副歌片段（music_dir）
+9. 「点歌 <歌名>」点播歌曲，从副歌开始裁剪（上限 music_clip_max_sec 秒）
 
 当前状态：
 • 触发模式: {prefix_mode}
@@ -1149,6 +1272,7 @@ class SgsVoiceMeme(Star):
 语音库: {len(self.voice_manager.category_order)} 个
 收录角色: {role_count} 位
 收录关键词: {keyword_count} 条
+曲库歌曲: {len(self._get_music_lib()) if self._music_ready() else '未启用'} 首
 """
         yield event.plain_result(stats_text)
 
@@ -1170,8 +1294,11 @@ class SgsVoiceMeme(Star):
         )
         # 3. 清理过期缓存
         self._cleanup_cache()
+        self._cleanup_music_cache()
         # 4. 清除角色列表图片缓存
         self._role_list_signature = ""
+        # 5. 音乐曲库按新配置重建
+        self._music_lib = None
 
         yield event.plain_result(
             f"✅ 已重载配置并扫描音频目录！\n"
