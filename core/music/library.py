@@ -12,6 +12,28 @@ import random
 import time
 from collections import deque
 
+# 自然语言点歌里可能挂在子目录名后的口头后缀（「日语歌」「经典音乐」→「日语」「经典」），
+# 长后缀在前，避免「歌曲」被「曲」抢先剥离
+SUBDIR_SUFFIXES = ("歌曲", "音乐", "的歌", "歌", "曲")
+
+
+def subdir_candidates(name: str) -> list:
+    """自然语言点歌的子目录候选名列表：原名 + 逐层剥离口头后缀的变体。
+
+    例：「日语歌」→ [日语歌, 日语]；「经典歌曲」→ [经典歌曲, 经典]。
+    剥到空串为止，原名始终排第一。
+    """
+    cands = [name]
+    cur = name
+    while True:
+        for suf in SUBDIR_SUFFIXES:
+            if cur.endswith(suf) and len(cur) > len(suf):
+                cur = cur[:-len(suf)]
+                cands.append(cur)
+                break
+        else:
+            return cands
+
 
 class MusicLibrary:
     AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".aac", ".wav", ".ogg",
