@@ -53,7 +53,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.5", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.6", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -344,9 +344,15 @@ class SgsVoiceMeme(Star):
         song_req = song_request.parse(message) if self._music_ready() else None
         if music_random_bare or rand_match or music_match or full_match or song_req:
             if rand_match and not full_match:
-                # 随机音乐 <目录>：曲库内子目录名（忽略空格/大小写）
+                # 随机音乐 <目录>：目录为曲库子目录名（忽略空格/大小写，
+                # 容忍「歌/歌曲/音乐」口头后缀，如「随机音乐 奏乐曲」→奏乐）
                 lib = self._get_music_lib()
-                subdir = lib.resolve_subdir(rand_match.group(1)) if lib else None
+                subdir = None
+                if lib:
+                    for cand in subdir_candidates(rand_match.group(1).strip()):
+                        subdir = lib.resolve_subdir(cand)
+                        if subdir:
+                            break
                 if subdir is None:
                     tips = "、".join(lib.subdirs()) if lib else ""
                     yield event.plain_result(
@@ -539,7 +545,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.8.5
+        help_text = f"""🎭 通用语音插件 v1.8.6
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
