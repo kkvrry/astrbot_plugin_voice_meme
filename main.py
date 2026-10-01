@@ -52,7 +52,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.3", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.4", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -526,7 +526,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.8.3
+        help_text = f"""🎭 通用语音插件 v1.8.4
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
@@ -540,7 +540,7 @@ class SgsVoiceMeme(Star):
 8. 「随机音乐 [目录]」随机播放曲库副歌片段，可指定子目录（如：随机音乐 古风）
 9. 「音乐 <歌名>」点播歌曲，按副歌段裁剪发送（music_clip_max_sec 为上限，多首匹配默认第一首）
 10. 「完整音乐 <歌名>」以文件形式发送完整歌曲（不经裁剪）
-11. 「给XX来一首YY」自然语言点歌，走副歌裁剪（如：给我来一首晴天）
+11. 「来一首YY」或「给XX来一首YY」自然语言点歌，走副歌裁剪（如：来一首晴天）
 
 当前状态：
 • 触发模式: {prefix_mode}

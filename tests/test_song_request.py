@@ -19,6 +19,12 @@ def main():
     r = parse("给我来一首晴天")
     check("基础句式", r == ("我", "晴天"), f"{r}")
 
+    r = parse("来一首晴天")
+    check("裸句式", r == ("", "晴天"), f"{r}")
+
+    r = parse("来一首 喜欢你！")
+    check("裸句式含标点", r == ("", "喜欢你"), f"{r}")
+
     r = parse("给大家来一首泡沫")
     check("人名为大家", r == ("大家", "泡沫"), f"{r}")
 
@@ -45,6 +51,9 @@ def main():
 
     r = parse("音乐 晴天")
     check("指令格式不受影响", r is None, f"{r}")
+
+    r = parse("随机音乐 古风")
+    check("随机指令不受影响", r is None, f"{r}")
 
     failed = [n for n, ok, _ in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} passed")

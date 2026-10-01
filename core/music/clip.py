@@ -35,7 +35,8 @@ MIN_SEG_SEC = 12    # 副歌段最短时长
 NOVELTY_KERNEL = 16 # Foote checkerboard 半窗（秒）
 SEG_SIM_THRESHOLD = 0.92   # 段落判为"同一段"的 mean-chroma 余弦阈值
 GAP_SEARCH_SEC = 3.0       # 切点吸附搜索半径
-FADE_SEC = 0.06            # 淡入淡出时长
+LEAD_IN_SEC = 0.5          # 起点前预留量：吸附到气口后再往前退一点，避免从唱词中间起头
+FADE_SEC = 0.1             # 淡入淡出时长
 
 # 输出格式预设：与插件既有 _get_wav_path 约定对齐
 OUT_FORMATS = {
@@ -197,14 +198,19 @@ def _analyze_structure(y: np.ndarray) -> dict:
 
 # ---------------------------------------------------------------- 能量兜底（无 librosa）
 
-def _analyze_energy(y: np.ndarray) -> dict:
-    """最响 30 秒窗口作为副歌近似。y 为 1s 聚合后的能量序列时更稳。"""
+def _analyze_energy(y: np.ndarray, duration: float = 30.0) -> dict:
+    """最响窗口作为副歌近似（无 librosa 时的兜底）。
+
+    窗口时长跟随配置的裁剪上限 duration（15~90 秒），不再固定 30 秒。
+    y 为 1s 聚合后的能量序列时更稳。
+    """
     per_sec = SR
     n = len(y) // per_sec
     if n < 40:
         return {}
+    win = int(max(15, min(duration, 90)))
+    win = min(win, n - 1)
     env = np.abs(y[: n * per_sec]).reshape(n, per_sec).mean(axis=1)
-    win = 30
     energy = np.convolve(env, np.ones(win) / win, mode="valid")
     peak = int(np.argmax(energy))
     return {"start": float(peak), "end": float(peak + win)}
@@ -254,8 +260,8 @@ def find_chorus_clip(path: str, duration: float = 30.0,
                 os.path.abspath(__file__)))), "cache_clip")
     os.makedirs(cache_dir, exist_ok=True)
 
-    # 1. 分析缓存（v2：新增 first_end 自然段尾 + mp3 192k）
-    akey = _file_key(path, "v2")
+    # 1. 分析缓存（v3：起点前预留 + 能量窗口随时长）
+    akey = _file_key(path, "v3")
     info = _load_json_cache(cache_dir, akey)
     method = info.get("method") if info else None
 
@@ -270,7 +276,7 @@ def find_chorus_clip(path: str, duration: float = 30.0,
             except Exception:
                 info = {}
         if not info:
-            info = _analyze_energy(y)
+            info = _analyze_energy(y, duration)
             method = "energy"
         if not info:
             return None
@@ -283,23 +289,26 @@ def find_chorus_clip(path: str, duration: float = 30.0,
         start, end = info["start"], info["end"]
     else:
         y, _ = _decode_raw(path)
-        start = _snap_to_gap(y, max(0.0, info["start"]))
+        # 起点只向前吸附：落在片段开始前的气口/间奏上，
+        # 再往前预留 LEAD_IN_SEC，让副歌人声自然进入，而不是从唱词中间开始
+        start = _snap_to_gap(y, max(0.0, info["start"]), before_only=True)
+        start = max(0.0, start - LEAD_IN_SEC)
         # 裁剪时长按副歌段的自然长度：结构路线取副歌首次出现段（first_end），
-        # 能量路线取其 30 秒窗口（info["end"]）；music_clip_max_sec 仅作硬上限
+        # 能量路线取其最响窗口（info["end"]）；music_clip_max_sec 仅作硬上限
         end_t = start + duration
         natural = info.get("first_end") or info.get("end")
         if natural and natural > start + 5.0:
             end_t = min(end_t, float(natural))
         # 结尾只向前吸附：切点始终不越过 end_t
         end = _snap_to_gap(y, end_t, before_only=True)
-        end = min(end, len(y) / SR)
+        end = min(end, len(y) / SR, start + duration)
         if end - start < 5.0:      # 音频本身比设定时长还短，能切多少切多少
             end = len(y) / SR
         info.update(start=round(start, 3), end=round(end, 3), snapped=True)
         _save_json_cache(cache_dir, akey, info)
 
     # 3. 成品缓存
-    ckey = _file_key(path, "clip_v2", round(start, 2), round(end, 2), out_format)
+    ckey = _file_key(path, "clip_v3", round(start, 2), round(end, 2), out_format)
     clip_path = os.path.join(cache_dir, ckey + "." + out_format)
     if not os.path.exists(clip_path):
         eff_dur = max(1.0, end - start)
