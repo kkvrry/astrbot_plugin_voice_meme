@@ -42,7 +42,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_sgsvoice", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.6.1", "https://github.com/kvrry/astrbot_plugin_xgs_voice")
+@register("astrbot_plugin_sgsvoice", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.7.0", "https://github.com/kvrry/astrbot_plugin_xgs_voice")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -118,8 +118,12 @@ class SgsVoiceMeme(Star):
             self._music_lib = MusicLibrary(self.music_dir)
         return self._music_lib
 
-    async def _handle_music(self, event: AstrMessageEvent, query: str | None):
-        """「点歌 <歌名>」/「随机音乐」：定位副歌起点，裁剪至最大时长后发送。"""
+    async def _handle_music(self, event: AstrMessageEvent, query: str | None,
+                            full: bool = False):
+        """「点歌 <歌名>」/「随机音乐」：定位副歌起点，裁剪至最大时长后发送。
+
+        full=True（「点歌完整 <歌名>」）时跳过分析，直接发送完整歌曲文件。
+        """
         self.trigger_count += 1
         if not _MUSIC_OK:
             yield event.plain_result("❌ 音乐功能依赖 numpy/librosa，当前运行环境缺失，请联系管理员安装。")
@@ -154,6 +158,20 @@ class SgsVoiceMeme(Star):
                 return
 
         stem = os.path.splitext(os.path.basename(song_path))[0]
+
+        # 完整文件模式：跳过副歌分析，直接以文件形式发送原曲
+        if full:
+            logger.info(f"[通用语音] 完整点歌: {stem}")
+            yield event.plain_result(f"📀 正在发送完整歌曲：{stem}")
+            try:
+                yield event.chain_result([
+                    Comp.File(file=song_path, name=os.path.basename(song_path))
+                ])
+            except Exception as e:
+                logger.error(f"[通用语音] 完整歌曲发送失败: {e}")
+                yield event.plain_result("❌ 完整歌曲发送失败。")
+            return
+
         logger.info(f"[通用语音] 音乐点播: {stem} (来源: {'点歌' if query else '随机'})")
         yield event.plain_result(f"🎵 副歌提取中：{stem}（首次解析需要几秒~几十秒）")
 
@@ -300,10 +318,12 @@ class SgsVoiceMeme(Star):
         # ---- 功能: 音乐点播 / 随机音乐（走副歌裁剪通道，优先于语音匹配）----
         # 音乐点播 / 随机音乐入口
         music_random = message in ("随机音乐", "随机歌曲", "来首歌", "点歌")
+        full_match = re.match(r"^点歌完整\s+(.+)$", message)
         music_match = re.match(r"^点歌\s+(.+)$", message)
-        if music_random or music_match:
-            query = music_match.group(1).strip() if music_match else None
-            async for r in self._handle_music(event, query):
+        if music_random or music_match or full_match:
+            m = full_match or music_match
+            query = m.group(1).strip() if m else None
+            async for r in self._handle_music(event, query, full=bool(full_match)):
                 yield r
             event.stop_event()
             return
@@ -462,7 +482,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.6.1
+        help_text = f"""🎭 通用语音插件 v1.7.0
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
@@ -475,6 +495,7 @@ class SgsVoiceMeme(Star):
    角色重名时可用「库名+角色名」精确点播（如：三国杀曹操3）
 8. 「随机音乐」随机播放曲库歌曲的副歌片段（music_dir）
 9. 「点歌 <歌名>」点播歌曲，从副歌开始裁剪（上限 music_clip_max_sec 秒）
+10. 「点歌完整 <歌名>」以文件形式发送完整歌曲（不经裁剪）
 
 当前状态：
 • 触发模式: {prefix_mode}
