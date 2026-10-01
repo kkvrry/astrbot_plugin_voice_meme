@@ -34,28 +34,35 @@ def _clean_target(raw: str):
     return t or None
 
 
+# 泛指宾语（无具体目标）→ 曲库随机，如「来一首歌」「来首音乐」
+_GENERIC_TARGETS = {"歌", "歌曲", "音乐", "曲子"}
+
+
 def parse(message: str):
     """解析自然语言点歌句式。
 
     返回 (recipient, target)：
       target 非空 → 按歌名/子目录处理；
-      target 为空字符串 → 随机（给XX奏乐 / 奏乐）；
+      target 为空字符串 → 随机（奏乐 / 给XX奏乐 / 来一首歌 等泛指）；
       不匹配 → None。
     """
     msg = (message or "").strip()
 
     m = _RE_GIVE.match(msg)
     if m:
+        recipient = m.group(1).strip()
         target = _clean_target(m.group(2))
-        if target is None:
-            # 给XX奏乐（无宾语）→ 为 XX 随机
-            return m.group(1).strip(), ""
-        return m.group(1).strip(), target
+        if target is None or target in _GENERIC_TARGETS:
+            # 无宾语或泛指（给XX来一首歌）→ 为 XX 随机
+            return recipient, ""
+        return recipient, target
 
     m = _RE_BARE.match(msg)
     if m:
         target = _clean_target(m.group(2))
         if target is not None:
+            if target in _GENERIC_TARGETS:
+                return "", ""
             return "", target
         # 裸动词无宾语：仅「奏乐」作为随机触发词占用，「来一首/来首」不占用
         if m.group(1) == "奏乐":

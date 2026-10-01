@@ -34,6 +34,15 @@ def main():
     r = parse("奏乐 日语")
     check("奏乐+目录", r == ("", "日语"), f"{r}")
 
+    r = parse("来一首歌")
+    check("泛指「歌」=随机", r == ("", ""), f"{r}")
+
+    r = parse("来首音乐")
+    check("泛指「音乐」=随机", r == ("", ""), f"{r}")
+
+    r = parse("给fk来一首歌")
+    check("给XX+泛指=为XX随机", r == ("fk", ""), f"{r}")
+
     r = parse("给fk奏乐 日语歌")
     check("给XX奏乐+目录", r == ("fk", "日语歌"), f"{r}")
 
