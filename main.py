@@ -42,7 +42,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_sgsvoice", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.7.0", "https://github.com/kvrry/astrbot_plugin_xgs_voice")
+@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.7.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -72,7 +72,7 @@ class SgsVoiceMeme(Star):
         self.trigger_count = 0
 
         # 加载持久化数据目录
-        self.data_dir = StarTools.get_data_dir("sgsvoice")
+        self.data_dir = StarTools.get_data_dir("voice_meme")
 
         # 角色列表图片缓存路径 + 内容签名
         self._role_list_img_path = os.path.join(self.data_dir, "role_list_cache.png")

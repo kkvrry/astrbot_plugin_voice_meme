@@ -66,7 +66,7 @@ pip install pandas openpyxl requests
 #### 运行爬取
 
 ```bash
-cd astrbot_plugin_xgs_voice
+cd astrbot_plugin_voice_meme
 python download_sgs_voices.py
 ```
 
@@ -99,7 +99,7 @@ voice/sgs_voices/
 语音库统一放在 **`voice/` 大目录**下——一个语音库就是"一个含角色子文件夹的文件夹"。`voice/sgs_voices` 是默认的语音库，你可以在 `voice/` 下直接新建文件夹放入其它类型的音频，重启插件或执行 `/v reload` 后即可生效：
 
 ```
-astrbot_plugin_xgs_voice/
+astrbot_plugin_voice_meme/
 └── voice/                  # 语音库大目录
     ├── sgs_voices/         # 语音库 1：三国杀（默认）
     │   └── 曹操/01_xxx.mp3
