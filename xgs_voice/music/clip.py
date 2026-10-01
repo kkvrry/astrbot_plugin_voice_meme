@@ -245,8 +245,10 @@ def find_chorus_clip(path: str, duration: float = 30.0,
     if not _HAS_NUMPY:
         return None
     if cache_dir is None:
-        cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "cache_clip")
+        # 默认落在插件根目录下（clip.py 位于 xgs_voice/music/，向上三级）
+        cache_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))), "cache_clip")
     os.makedirs(cache_dir, exist_ok=True)
 
     # 1. 分析缓存
