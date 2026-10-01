@@ -45,18 +45,16 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.1", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.2", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
 
         self.base_dir = os.path.dirname(__file__)
-        # 语音库大目录：默认 voice/（其下每个一级文件夹是一个语音库，sgs_voices 为默认库），
-        # 可通过配置 audio_root 指定其它大目录；extra_lib_dirs 为额外语音库目录列表（任意位置，
-        # 每项可为单个库目录或含多库的大目录），在自动识别之外追加
-        self.audio_root = self.config.get("audio_root", "voice")
-        self.default_lib = self.config.get("default_lib", "voice/sgs_voices")
+        # 语音库大目录固定为 voice/（其下每个一级文件夹是一个语音库），
+        # 插件目录外的库通过 extra_lib_dirs 追加（每项可为单个库目录或含多库的大目录）
+        self.default_lib = self.config.get("default_lib", "voice/三国杀")
         self.extra_libs = [
             str(x).strip() for x in (self.config.get("extra_lib_dirs", []) or [])
             if str(x).strip()
@@ -67,7 +65,7 @@ class SgsVoiceMeme(Star):
 
         # 初始化语音管理器
         self.voice_manager = VoiceManager(
-            self.base_dir, self.audio_root, self.default_lib,
+            self.base_dir, self.default_lib,
             self.min_keyword_len, self.extra_libs
         )
 
@@ -121,14 +119,6 @@ class SgsVoiceMeme(Star):
             self._music_lib = MusicLibrary(self.music_dir,
                                            exclude_dirs=self.music_exclude_dirs)
         return self._music_lib
-
-    def _resolve_music_subdir(self, lib, name: str) -> str | None:
-        """「随机音乐 <目录>」的目录解析：轻音乐别名 → 配置目录，其余按子目录名匹配。"""
-        if not name:
-            return None
-        if self._norm_light == self._norm_text(name) and self.music_light_dir:
-            name = self.music_light_dir
-        return lib.resolve_subdir(name)
 
     @staticmethod
     def _norm_text(s: str) -> str:
@@ -254,7 +244,6 @@ class SgsVoiceMeme(Star):
             self.config.get("music_clip_max_sec", 60) or 60)))
         excl = self.config.get("music_exclude_dirs", []) or []
         self.music_exclude_dirs = [str(d) for d in excl if str(d).strip()]
-        self.music_light_dir = str(self.config.get("music_light_dir", "") or "").strip()
 
     def _cleanup_cache(self):
         """清理缓存：删除源文件已不存在的 WAV 缓存（孤儿缓存），以及超期的合并缓存"""
@@ -354,9 +343,9 @@ class SgsVoiceMeme(Star):
         song_req = song_request.parse(message) if self._music_ready() else None
         if music_random_bare or rand_match or music_match or full_match or song_req:
             if rand_match and not full_match:
-                # 随机音乐 <目录>：目录为子目录名或「轻音乐」别名
+                # 随机音乐 <目录>：曲库内子目录名（忽略空格/大小写）
                 lib = self._get_music_lib()
-                subdir = self._resolve_music_subdir(lib, rand_match.group(1)) if lib else None
+                subdir = lib.resolve_subdir(rand_match.group(1)) if lib else None
                 if subdir is None:
                     tips = "、".join(lib.subdirs()) if lib else ""
                     yield event.plain_result(
@@ -536,7 +525,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.8.1
+        help_text = f"""🎭 通用语音插件 v1.8.2
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
@@ -547,8 +536,7 @@ class SgsVoiceMeme(Star):
 6. 关键词匹配（含模糊匹配，阈值: {self.fuzzy_threshold*100:.0f}%）
 7. 多语音库：voice/ 下自动识别 + 配置额外库目录（extra_lib_dirs），
    角色重名时可用「库名+角色名」精确点播（如：三国杀曹操3）
-8. 「随机音乐 [目录]」随机播放曲库副歌片段，可指定子目录（如：随机音乐 古风），
-   「轻音乐」为配置的别名目录（music_light_dir）
+8. 「随机音乐 [目录]」随机播放曲库副歌片段，可指定子目录（如：随机音乐 古风）
 9. 「音乐 <歌名>」点播歌曲，从副歌开始裁剪（上限 music_clip_max_sec 秒）
 10. 「完整音乐 <歌名>」以文件形式发送完整歌曲（不经裁剪）
 11. 「给XX来一首YY」自然语言点歌，走副歌裁剪（如：给我来一首晴天）
@@ -655,10 +643,9 @@ class SgsVoiceMeme(Star):
             str(x).strip() for x in (self.config.get("extra_lib_dirs", []) or [])
             if str(x).strip()
         ]
-        self.audio_root = self.config.get("audio_root", "voice")
-        self.default_lib = self.config.get("default_lib", "voice/sgs_voices")
+        self.default_lib = self.config.get("default_lib", "voice/三国杀")
         self.voice_manager = VoiceManager(
-            self.base_dir, self.audio_root, self.default_lib,
+            self.base_dir, self.default_lib,
             self.min_keyword_len, self.extra_libs
         )
         # 3. 清理过期缓存

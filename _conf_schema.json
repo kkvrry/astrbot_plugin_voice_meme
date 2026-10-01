@@ -72,12 +72,6 @@
     "hint": "关键词模糊匹配的灵敏度（0-1，默认 0.6，越高越严格）",
     "default": 0.6
   },
-  "audio_root": {
-    "description": "语音库大目录",
-    "type": "string",
-    "hint": "语音库的根目录（相对插件目录或绝对路径），其下每个一级文件夹视为一个语音库。默认 voice，即 voice/sgs_voices、voice/其它库 的结构；留空则自动检测 voice/ 或插件目录",
-    "default": "voice"
-  },
   "default_lib": {
     "description": "默认语音库目录",
     "type": "string",
@@ -113,12 +107,6 @@
     "type": "list",
     "hint": "扫描音乐目录时跳过的子目录名（按名称匹配，任意层级生效）。例如 Playlists、歌单缓存等不想被随机到的目录",
     "default": []
-  },
-  "music_light_dir": {
-    "description": "轻音乐目录",
-    "type": "string",
-    "hint": "「随机音乐 轻音乐」时实际使用的子目录（相对音乐目录的路径）。留空则按曲库内名为「轻音乐」的子目录匹配",
-    "default": ""
   },
   "music_clip_max_sec": {
     "description": "音乐片段最大时长",

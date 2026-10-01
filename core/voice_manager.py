@@ -13,18 +13,17 @@ class VoiceManager:
     # 支持的音频格式（m4a 同样支持，发送前会经 ffmpeg 转码为 WAV）
     AUDIO_EXTS = ('.mp3', '.wav', '.m4a')
 
-    def __init__(self, base_dir, audio_root="", default_lib="", min_keyword_len=2, extra_libs=None):
+    def __init__(self, base_dir, default_lib="", min_keyword_len=2, extra_libs=None):
         """
         base_dir: 插件目录。
-        audio_root: 配置指定的语音库大目录（绝对路径或相对插件目录）；留空则自动检测 voice/。
-                   默认结构: 插件目录/voice/ 下每个一级文件夹是一个语音库。
-        default_lib: 默认语音库目录（兜底），默认 voice/sgs_voices。
+        default_lib: 默认语音库目录（兜底）。
         min_keyword_len: 关键词最短长度，过滤过短的词避免误触发（默认 2）。
         extra_libs: 额外语音库目录列表，每项可为一个库目录（其下为角色文件夹）
                    或含多个库的大目录（绝对路径或相对插件目录），在自动识别之外追加。
+
+        语音库大目录固定为 插件目录/voice/，其下每个一级文件夹是一个语音库。
         """
         self.base_dir = base_dir
-        self.audio_root = audio_root
         self.default_lib = default_lib
         self.min_keyword_len = max(1, int(min_keyword_len or 2))
         self.extra_libs = [str(x).strip() for x in (extra_libs or []) if str(x).strip()]
@@ -140,37 +139,27 @@ class VoiceManager:
         """确定要扫描的语音库目录列表。
 
         组合规则（按扫描顺序，先扫描的库在角色重名时优先）：
-        1. audio_root 指定的大目录（未配置则自动检测 voice/ 下的一级文件夹）；
+        1. voice/ 下的一级文件夹（自动检测）；
         2. extra_libs 额外语音库目录列表，逐项追加（去重）；
         3. 全部为空时兜底 default_lib。
         """
         roots = []
 
-        # 1. 用户配置的 audio_root（绝对路径或相对插件目录的大目录）
-        custom = (self.audio_root or "").strip()
-        if custom:
-            p = custom if os.path.isabs(custom) else os.path.join(self.base_dir, custom)
-            if os.path.isdir(p):
-                roots.append(p)
-            else:
-                logger.warning(f"[通用语音] 配置的音频根目录不存在: {p}，回退为 voice/ 自动检测")
+        # 1. 默认大目录 voice/：其下每个含角色目录的一级文件夹视为语音库
+        voice_root = os.path.join(self.base_dir, "voice")
+        if os.path.isdir(voice_root):
+            try:
+                entries = sorted(os.listdir(voice_root))
+            except OSError:
+                entries = []
+            for name in entries:
+                if name.startswith('.'):
+                    continue
+                p = os.path.join(voice_root, name)
+                if os.path.isdir(p) and self._has_role_dirs(p):
+                    roots.append(p)
 
-        # 2. 默认大目录 voice/：其下每个含角色目录的一级文件夹视为语音库
-        if not roots:
-            voice_root = os.path.join(self.base_dir, "voice")
-            if os.path.isdir(voice_root):
-                try:
-                    entries = sorted(os.listdir(voice_root))
-                except OSError:
-                    entries = []
-                for name in entries:
-                    if name.startswith('.'):
-                        continue
-                    p = os.path.join(voice_root, name)
-                    if os.path.isdir(p) and self._has_role_dirs(p):
-                        roots.append(p)
-
-        # 3. 额外语音库目录列表：每项可为单个库目录，或含多个库的大目录
+        # 2. 额外语音库目录列表：每项可为单个库目录，或含多个库的大目录
         seen = {os.path.normcase(os.path.abspath(p)) for p in roots}
         for item in self.extra_libs:
             p = item if os.path.isabs(item) else os.path.join(self.base_dir, item)
@@ -186,7 +175,7 @@ class VoiceManager:
         if roots:
             return roots
 
-        # 4. 兜底：default_lib（默认 voice/sgs_voices）
+        # 3. 兜底：default_lib（默认 voice/三国杀）
         lib = (self.default_lib or "").strip()
         if lib:
             p = lib if os.path.isabs(lib) else os.path.join(self.base_dir, lib)
