@@ -28,6 +28,13 @@ _PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
+# astrbot 重载插件时不会清除本插件自行导入的 core.* 子模块缓存，
+# 旧模块会以旧签名残留在 sys.modules 中与新版 main.py 混用
+# （如 VoiceManager 参数错位导致初始化 TypeError）。这里强制清除，
+# 保证每次重载 core 都按当前磁盘代码重新导入。
+for _m in [k for k in sys.modules if k == "core" or k.startswith("core.")]:
+    del sys.modules[_m]
+
 from core import audio_tools, llm_gate, role_image
 from core.voice_manager import VoiceManager
 from core.constants import DEFAULT_LLM_PATTERNS
