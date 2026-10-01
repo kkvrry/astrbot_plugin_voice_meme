@@ -9,7 +9,7 @@ def build(vm, out_path: str, category=None):
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
-        logger.error("[通用语音] 生成角色列表图片需要 Pillow 库，请安装: pip install Pillow")
+        logger.error("[语音罐头] 生成角色列表图片需要 Pillow 库，请安装: pip install Pillow")
         return None
 
     # 按拼音首字母排序
@@ -135,5 +135,5 @@ def build(vm, out_path: str, category=None):
     # ---- 保存 ----
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     img.save(out_path, quality=95)
-    logger.info(f"[通用语音] 角色列表图片已生成: {out_path}")
+    logger.info(f"[语音罐头] 角色列表图片已生成: {out_path}")
     return out_path

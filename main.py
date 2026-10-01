@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-通用语音玩梗插件 — 入口
+语音罐头插件 — 入口
 事件路由、/v 管理指令与发送编排放这里；能力实现拆在 core/ 包内：
   constants.py      常量（LLM 唤醒词）
   voice_manager.py  语音库扫描与匹配
@@ -53,7 +53,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.9.2", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.9.3", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -95,9 +95,9 @@ class SgsVoiceMeme(Star):
         self._cleanup_cache()
         self._cleanup_music_cache()
 
-        logger.info(f"[通用语音] 插件初始化完成！")
-        logger.info(f"[通用语音] 语音库: {self.voice_manager.category_order}")
-        logger.info(f"[通用语音] 数据目录: {self.data_dir}")
+        logger.info(f"[语音罐头] 插件初始化完成！")
+        logger.info(f"[语音罐头] 语音库: {self.voice_manager.category_order}")
+        logger.info(f"[语音罐头] 数据目录: {self.data_dir}")
 
     # ---- 音频工具（薄封装，实现在 core/audio_tools.py）----
 
@@ -178,18 +178,18 @@ class SgsVoiceMeme(Star):
 
         # 完整文件模式：跳过副歌分析，直接以文件形式发送原曲
         if full:
-            logger.info(f"[通用语音] 完整音乐: {stem}")
+            logger.info(f"[语音罐头] 完整音乐: {stem}")
             yield event.plain_result(f"📀 正在发送完整歌曲：{stem}")
             try:
                 yield event.chain_result([
                     Comp.File(file=song_path, name=os.path.basename(song_path))
                 ])
             except Exception as e:
-                logger.error(f"[通用语音] 完整歌曲发送失败: {e}")
+                logger.error(f"[语音罐头] 完整歌曲发送失败: {e}")
                 yield event.plain_result("❌ 完整歌曲发送失败。")
             return
 
-        logger.info(f"[通用语音] 音乐播放: {stem} (来源: {src})")
+        logger.info(f"[语音罐头] 音乐播放: {stem} (来源: {src})")
 
         try:
             result = await asyncio.to_thread(
@@ -197,7 +197,7 @@ class SgsVoiceMeme(Star):
                 float(self.music_clip_max_sec), "mp3", self._music_clip_dir,
             )
         except Exception as e:
-            logger.error(f"[通用语音] 副歌提取异常: {e}")
+            logger.error(f"[语音罐头] 副歌提取异常: {e}")
             result = None
         if not result or not os.path.isfile(result["clip_path"]):
             yield event.plain_result(f"❌「{stem}」副歌提取失败，稍后再试试。")
@@ -208,12 +208,12 @@ class SgsVoiceMeme(Star):
             yield event.chain_result([Comp.Record(file=clip_path, url=clip_path)])
         except Exception as e:
             # 个别平台只认 WAV：回落到既有 _get_wav_path 转换通道重发一次
-            logger.warning(f"[通用语音] mp3 直发失败，转 WAV 重试: {e}")
+            logger.warning(f"[语音罐头] mp3 直发失败，转 WAV 重试: {e}")
             try:
                 wav_path = self._get_wav_path(clip_path)
                 yield event.chain_result([Comp.Record(file=wav_path, url=wav_path)])
             except Exception as e2:
-                logger.error(f"[通用语音] 音乐发送失败: {e2}")
+                logger.error(f"[语音罐头] 音乐发送失败: {e2}")
                 yield event.plain_result("❌ 音乐片段发送失败。")
 
     def _cleanup_music_cache(self):
@@ -268,7 +268,7 @@ class SgsVoiceMeme(Star):
                         except OSError:
                             continue
                 if removed:
-                    logger.info(f"[通用语音] 缓存清理: 删除 {removed} 个无效 WAV 缓存")
+                    logger.info(f"[语音罐头] 缓存清理: 删除 {removed} 个无效 WAV 缓存")
 
             # 2. cache_merged: 按保留天数清理
             if self.cache_max_days > 0:
@@ -285,9 +285,9 @@ class SgsVoiceMeme(Star):
                         except OSError:
                             continue
                     if removed:
-                        logger.info(f"[通用语音] 缓存清理: 删除 {removed} 个超期合并缓存")
+                        logger.info(f"[语音罐头] 缓存清理: 删除 {removed} 个超期合并缓存")
         except Exception as e:
-            logger.error(f"[通用语音] 缓存清理失败: {e}")
+            logger.error(f"[语音罐头] 缓存清理失败: {e}")
 
     def _needs_llm_response(self, message: str, event: AstrMessageEvent) -> bool:
         """判断消息是否需要 LLM 回复（实现在 core/llm_gate.py）"""
@@ -418,14 +418,14 @@ class SgsVoiceMeme(Star):
                 return
             img_path = self._generate_role_list_image(lib or None)
             if img_path:
-                logger.info(f"[通用语音] 发送角色列表图片 (库: {lib or '全部'})")
+                logger.info(f"[语音罐头] 发送角色列表图片 (库: {lib or '全部'})")
                 self.trigger_count += 1
                 try:
                     yield event.chain_result([
                         Comp.Image(file=img_path)
                     ])
                 except Exception as e:
-                    logger.error(f"[通用语音] 发送角色列表图片失败: {e}")
+                    logger.error(f"[语音罐头] 发送角色列表图片失败: {e}")
                     yield event.plain_result(f"角色列表图片发送失败，请检查日志。")
                 event.stop_event()
                 return
@@ -469,7 +469,7 @@ class SgsVoiceMeme(Star):
             return
 
         n = len(voice_infos)
-        logger.info(f"[通用语音] 触发: '{trigger_keyword}', 发送 {n} 条语音")
+        logger.info(f"[语音罐头] 触发: '{trigger_keyword}', 发送 {n} 条语音")
         self.trigger_count += 1
 
         # ---- 多条语音：提示所有台词 + 5条限制 + 音频合并 ----
@@ -500,7 +500,7 @@ class SgsVoiceMeme(Star):
                     ])
                     await asyncio.sleep(0.6)
                 except Exception as e:
-                    logger.error(f"[通用语音] 发送语音失败: {e}")
+                    logger.error(f"[语音罐头] 发送语音失败: {e}")
 
             # 多余语音合并为一条音频发送
             if merged:
@@ -512,7 +512,7 @@ class SgsVoiceMeme(Star):
                             Comp.Record(file=merged_audio, url=merged_audio)
                         ])
                     except Exception as e:
-                        logger.error(f"[通用语音] 发送合并语音失败: {e}")
+                        logger.error(f"[语音罐头] 发送合并语音失败: {e}")
                 else:
                     # 合并失败，逐条发送（可能超出5条限制）
                     for role, text, path in merged:
@@ -523,7 +523,7 @@ class SgsVoiceMeme(Star):
                             ])
                             await asyncio.sleep(0.6)
                         except Exception as e:
-                            logger.error(f"[通用语音] 发送语音失败: {e}")
+                            logger.error(f"[语音罐头] 发送语音失败: {e}")
         else:
             # 单条语音直接发送
             _, _, path = voice_infos[0]
@@ -533,7 +533,7 @@ class SgsVoiceMeme(Star):
                     Comp.Record(file=final_audio_path, url=final_audio_path)
                 ])
             except Exception as e:
-                logger.error(f"[通用语音] 发送语音失败: {e}")
+                logger.error(f"[语音罐头] 发送语音失败: {e}")
 
         # 智能判断是否需要 LLM 回复
         if self._needs_llm_response(message, event):
@@ -548,7 +548,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.9.2
+        help_text = f"""🎭 语音罐头 v1.9.3
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）

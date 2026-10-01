@@ -51,7 +51,7 @@ def get_wav_path(data_dir: str, base_dir: str, audio_path: str) -> str:
         subprocess.run(cmd, check=True)
         return wav_path
     except Exception as e:
-        logger.error(f"[通用语音] 音频转换失败 (MP3 -> WAV): {e}")
+        logger.error(f"[语音罐头] 音频转换失败 (MP3 -> WAV): {e}")
         # 如果转换失败，返回原路径，尝试让适配器自行处理
         return audio_path
 
@@ -118,5 +118,5 @@ def merge_audio_files(data_dir: str, audio_paths: list) -> str:
         subprocess.run(cmd, check=True, timeout=120)
         return merged_path
     except Exception as e:
-        logger.error(f"[通用语音] 音频合并失败: {e}")
+        logger.error(f"[语音罐头] 音频合并失败: {e}")
         return None

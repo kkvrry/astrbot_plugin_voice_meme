@@ -89,7 +89,7 @@ class VoiceManager:
 
         roots = self._discover_audio_roots()
         if not roots:
-            logger.error(f"[通用语音] 未发现任何语音库，请检查音频目录: {self.base_dir}")
+            logger.error(f"[语音罐头] 未发现任何语音库，请检查音频目录: {self.base_dir}")
             return
 
         for root in roots:
@@ -100,7 +100,7 @@ class VoiceManager:
             for role, paths in roles.items():
                 if role in self.role_map:
                     logger.warning(
-                        f"[通用语音] 角色名「{role}」在多个语音库中重复，"
+                        f"[语音罐头] 角色名「{role}」在多个语音库中重复，"
                         f"纯角色名匹配将使用库「{self.role_category[role]}」，"
                         f"可用「库名+角色名」精确点播（如「{cat}{role}」）"
                     )
@@ -130,7 +130,7 @@ class VoiceManager:
         self.lib_signature = hashlib.md5('|'.join(sorted(sig_parts)).encode()).hexdigest()
 
         logger.info(
-            f"[通用语音] 扫描完成: {len(self.category_order)} 个语音库"
+            f"[语音罐头] 扫描完成: {len(self.category_order)} 个语音库"
             f"（{', '.join(self.category_order)}），{len(self.role_map)} 个角色，"
             f"{len(self.keyword_map)} 个关键词"
         )
@@ -170,7 +170,7 @@ class VoiceManager:
                 roots.append(p)
                 seen.add(key)
             else:
-                logger.warning(f"[通用语音] 额外语音库目录不存在: {p}，已跳过")
+                logger.warning(f"[语音罐头] 额外语音库目录不存在: {p}，已跳过")
 
         if roots:
             return roots
