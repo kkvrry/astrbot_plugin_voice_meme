@@ -9,7 +9,7 @@
   llm_gate.py       LLM 回复判定
   music/library.py  音乐曲库（扫描/匹配/随机）
   music/clip.py     副歌定位与裁剪（分析+转码一体）
-  music/request.py  自然语言点歌解析（「给XX来一首YY」）
+  music/request.py  自然语言点歌解析（「[给XX]来一首/奏乐」句式）
 """
 
 import os
@@ -53,7 +53,7 @@ except Exception:
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.8.6", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "落日七号、复读机长", "通用语音玩梗插件 - 按语音库/角色名/台词关键词自动发送对应语音，支持多语音库与外部库目录（mp3/wav/m4a）", "1.9.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -365,22 +365,25 @@ class SgsVoiceMeme(Star):
                 event.stop_event()
                 return
             if song_req and not full_match and not music_match:
-                # 来一首YY / 给XX来一首YY：
-                # YY 命中曲库子目录（容忍「歌/歌曲/音乐」口头后缀）→ 目录内随机；
-                # 否则按歌名点播
-                _, song = song_req
+                # [给XX]来一首/来首/奏乐 [YY]：
+                # YY 为空 → 曲库随机；YY 命中曲库子目录（容忍「歌/歌曲/音乐」
+                # 口头后缀）→ 目录内随机；否则按歌名点播
+                _, target = song_req
                 lib = self._get_music_lib()
                 subdir = None
-                if lib and subdir_candidates:
-                    for cand in subdir_candidates(song):
+                if target and lib and subdir_candidates:
+                    for cand in subdir_candidates(target):
                         subdir = lib.resolve_subdir(cand)
                         if subdir:
                             break
-                if subdir:
+                if not target:
+                    async for r in self._handle_music(event, None):
+                        yield r
+                elif subdir:
                     async for r in self._handle_music(event, None, subdir=subdir):
                         yield r
                 else:
-                    async for r in self._handle_music(event, song):
+                    async for r in self._handle_music(event, target):
                         yield r
                 event.stop_event()
                 return
@@ -545,7 +548,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 通用语音插件 v1.8.6
+        help_text = f"""🎭 通用语音插件 v1.9.0
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
@@ -559,8 +562,9 @@ class SgsVoiceMeme(Star):
 8. 「随机音乐 [目录]」随机播放曲库副歌片段，可指定子目录（如：随机音乐 古风）
 9. 「音乐 <歌名>」点播歌曲，按副歌段裁剪发送（music_clip_max_sec 为上限，多首匹配默认第一首）
 10. 「完整音乐 <歌名>」以文件形式发送完整歌曲（不经裁剪）
-11. 「来一首YY」或「给XX来一首YY」自然语言点歌（如：来一首晴天）；
-    YY 为曲库子目录（可带「歌/歌曲/音乐」后缀，如「来一首日语歌」）时在该目录内随机
+11. 「来一首YY」「来首YY」「奏乐 [YY]」「给XX奏乐」等自然语言点歌；
+    YY 为空 → 曲库随机；YY 为曲库子目录（可带「歌/歌曲/音乐」后缀）→ 目录内随机；
+    否则按歌名点播（如：奏乐 / 给我来一首晴天 / 来首日语歌）
 
 当前状态：
 • 触发模式: {prefix_mode}
