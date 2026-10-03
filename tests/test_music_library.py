@@ -8,8 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.music.library import (MusicLibrary, fold, fold_match,  # noqa: E402
-                                split_name,
-                                subdir_candidates)
+                                split_name)
 
 TMP = tempfile.mkdtemp(prefix="music_lib_test_")
 RESULTS = []
@@ -130,17 +129,8 @@ def main():
     check("限定排除目录随机为空池兜底", pick is None or "Playlists" not in pick,
           f"{pick}")
 
-    # ---- 自然语言点歌的子目录候选名 ----
-    check("候选名：原名优先", subdir_candidates("晴天") == ["晴天"],
-          f"{subdir_candidates('晴天')}")
-    check("候选名：剥「歌」", subdir_candidates("日语歌") == ["日语歌", "日语"],
-          f"{subdir_candidates('日语歌')}")
-    check("候选名：剥「歌曲」", subdir_candidates("经典歌曲") == ["经典歌曲", "经典"],
-          f"{subdir_candidates('经典歌曲')}")
-    check("候选名：剥「音乐」", subdir_candidates("经典音乐") == ["经典音乐", "经典"],
-          f"{subdir_candidates('经典音乐')}")
-    check("候选名：连剥不剥到空", subdir_candidates("歌") == ["歌"],
-          f"{subdir_candidates('歌')}")
+    # 注：自然语言点歌的宾语候选名（subdir_candidates → target_candidates）
+    # 已随判定逻辑迁到 core.music.request，对应用例在 tests/test_song_request.py
 
     shutil.rmtree(TMP, ignore_errors=True)
     n_fail = sum(1 for _, ok, _ in RESULTS if not ok)

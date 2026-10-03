@@ -43,17 +43,16 @@ from core.constants import DEFAULT_LLM_PATTERNS
 try:
     from core.music import clip as song_clip
     from core.music import request as song_request
-    from core.music.library import MusicLibrary, subdir_candidates
+    from core.music.library import MusicLibrary
     _MUSIC_OK = getattr(song_clip, "_HAS_NUMPY", False)
 except Exception:
     song_clip = None
     song_request = None
     MusicLibrary = None
-    subdir_candidates = None
     _MUSIC_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.10.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.11.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -131,6 +130,18 @@ class SgsVoiceMeme(Star):
     @staticmethod
     def _norm_text(s: str) -> str:
         return re.sub(r"[\s　]+", "", s or "").lower()
+
+    @staticmethod
+    def _resolve_music_key(lib, key: str):
+        """把「随机音乐 <X>」/「来一首<宾语>」的 X 解析为 (kind, value)。
+
+        委派给 song_request.resolve_target：子目录 → 歌手 → 歌名，命中即止，
+        宾语口语后缀（的歌/歌曲/音乐）由 target_candidates 逐层剥离。
+        曲库不可用时降级为 (song, 原文)，交由点播通道报错提示。
+        """
+        if lib is None or song_request is None:
+            return "song", (key or "").strip()
+        return song_request.resolve_target(lib, key)
 
     async def _handle_music(self, event: AstrMessageEvent, query: str | None,
                             full: bool = False, subdir: str | None = None,
@@ -357,29 +368,20 @@ class SgsVoiceMeme(Star):
         # 否则回落语音匹配/LLM，避免吞掉含该句式的普通聊天
         song_req = song_request.parse(message) if self._music_ready() else None
         if music_random_bare or rand_match or music_match or full_match or song_req:
+            lib = self._get_music_lib()
+            # 三条入口统一归一为「(子目录, 歌手, 歌名查询)」三元组后再分派，
+            # 判定逻辑全部收敛在 song_request.resolve_target 里，路由只负责分派
             if rand_match and not full_match:
-                # 随机音乐 <目录>：先按曲库子目录名解析（忽略空格/大小写，
-                # 容忍「歌/歌曲/音乐」口头后缀，如「随机音乐 奏乐曲」→奏乐），
-                # 子目录未命中则按歌手名解析（该歌手歌曲内随机）
-                lib = self._get_music_lib()
-                key = rand_match.group(1).strip()
-                subdir = artist = None
-                if lib:
-                    for cand in subdir_candidates(key):
-                        subdir = lib.resolve_subdir(cand)
-                        if subdir:
-                            break
-                    if not subdir:
-                        artist = lib.resolve_artist(key)
-                if subdir is None and artist is None:
+                # 随机音乐 <目录|歌手>：子目录优先，未命中当歌手解析
+                kind, value = self._resolve_music_key(lib, rand_match.group(1))
+                if kind not in ("subdir", "artist"):
                     tips = "、".join(lib.subdirs()) if lib else ""
                     yield event.plain_result(
                         f"❌ 没有这个音乐目录或歌手。可用目录：{tips or '（曲库无子目录）'}\n"
                         f"用法：随机音乐 <目录名或歌手名>，如「随机音乐 古风」")
                     event.stop_event()
                     return
-                async for r in self._handle_music(event, None, subdir=subdir,
-                                                  artist=artist):
+                async for r in self._handle_music(event, None, subdir=value):
                     yield r
                 event.stop_event()
                 return
@@ -387,31 +389,29 @@ class SgsVoiceMeme(Star):
                 # [给XX]来一首/来首/奏乐 [YY]，解析顺序：
                 # 空 → 曲库随机；子目录（容忍口头后缀）→ 目录内随机；
                 # 歌手名 → 该歌手歌曲内随机；否则按歌名点播（模糊匹配）
+                # 「整首/完整」修饰对三种分支都生效（整首日语 = 整首文件直发）
                 recipient, target = song_req
-                lib = self._get_music_lib()
-                subdir = artist = None
-                if target and lib and subdir_candidates:
-                    for cand in subdir_candidates(target):
-                        subdir = lib.resolve_subdir(cand)
-                        if subdir:
-                            break
-                    if not subdir:
-                        artist = lib.resolve_artist(target)
-                if not target:
+                full = song_request.wants_full(message)
+                kind, value = self._resolve_music_key(lib, target)
+                if kind == "random":
                     async for r in self._handle_music(event, None,
-                                                      recipient=recipient):
+                                                      recipient=recipient,
+                                                      full=full):
                         yield r
-                elif subdir:
-                    async for r in self._handle_music(event, None, subdir=subdir,
-                                                      recipient=recipient):
+                elif kind == "subdir":
+                    async for r in self._handle_music(event, None, subdir=value,
+                                                      recipient=recipient,
+                                                      full=full):
                         yield r
-                elif artist:
-                    async for r in self._handle_music(event, None, artist=artist,
-                                                      recipient=recipient):
+                elif kind == "artist":
+                    async for r in self._handle_music(event, None, artist=value,
+                                                      recipient=recipient,
+                                                      full=full):
                         yield r
                 else:
-                    async for r in self._handle_music(event, target,
-                                                      recipient=recipient):
+                    async for r in self._handle_music(event, value,
+                                                      recipient=recipient,
+                                                      full=full):
                         yield r
                 event.stop_event()
                 return
@@ -576,7 +576,7 @@ class SgsVoiceMeme(Star):
     @v_group.command("help")
     async def v_help(self, event: AstrMessageEvent):
         prefix_mode = f"前缀触发（{self.wake_word_prefix}）" if self.require_prefix else "自由触发"
-        help_text = f"""🎭 语音罐头 v1.10.0
+        help_text = f"""🎭 语音罐头 v1.11.0
 
 📌 功能：
 1. 「角色名+序号」点播语音（如：SP关羽3）
@@ -590,12 +590,12 @@ class SgsVoiceMeme(Star):
 8. 「随机音乐 [目录/歌手]」随机播放曲库副歌片段，可指定子目录或歌手（如：随机音乐 古风 / 随机音乐 F4）
 9. 「音乐 <歌名>」点播歌曲，按副歌段裁剪发送（music_clip_max_sec 为上限，多首匹配默认第一首）；
    歌名支持模糊匹配：忽略空格/大小写/全角半角、假名与常见中文音译（白金disco = 白金ディスコ = 白金迪斯科）、
-   容忍错别字，也可用「歌手的歌」（如：邓紫棋的泡沫）
+   容忍错别字，≥2 字片段即可命中（白金 → 白金ディスコ），也可用「歌手的歌」（如：邓紫棋的泡沫）
 10. 「完整音乐 <歌名>」以文件形式发送完整歌曲（不经裁剪）
 11. 「来一首YY」「来首YY」「奏乐 [YY]」「给XX奏乐」等自然语言点歌；
-    YY 为空 → 曲库随机；YY 为曲库子目录（可带「歌/歌曲/音乐」后缀）→ 目录内随机；
-    YY 为歌手名 → 该歌手歌曲内随机；否则按歌名点播
-    （如：奏乐 / 给我来一首晴天 / 来首日语歌 / 给fk来一首F4）
+    YY 为空 → 曲库随机；YY 为曲库子目录或歌手（可带「的歌/歌曲/音乐」后缀）→ 目录或歌手内随机；
+    否则按歌名点播；加「整首/完整」则直发完整文件
+    （如：奏乐 / 给我来一首晴天 / 来首日语歌 / 给fk来一首F4的歌 / 整首流星雨）
 12. 播放时会先发一条提示：命令带人名时为「为XX献上一首《歌名》」
 
 当前状态：

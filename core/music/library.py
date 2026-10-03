@@ -21,13 +21,10 @@ import unicodedata
 from collections import deque
 from difflib import SequenceMatcher
 
-# 自然语言点歌里可能挂在子目录名后的口头后缀（「日语歌」「经典音乐」→「日语」「经典」），
-# 长后缀在前，避免「歌曲」被「曲」抢先剥离
-SUBDIR_SUFFIXES = ("歌曲", "音乐", "的歌", "歌", "曲")
-
 # ---------------------------------------------------------------- 假名罗马音
 # 曲库常见片假名/平假名歌名（如「ディスコ」），与用户口语「disco」按相似度即可命中。
 # 只覆盖日常音乐词用得到的音节，长音「ー」直接丢弃（相似度容忍）。
+# 「歌手 - 歌名」分隔符
 _KANA = {
     "ア": "a", "イ": "i", "ウ": "u", "エ": "e", "オ": "o",
     "カ": "ka", "キ": "ki", "ク": "ku", "ケ": "ke", "コ": "ko",
@@ -127,24 +124,6 @@ def split_name(stem: str):
     return "", stem
 
 
-def subdir_candidates(name: str) -> list:
-    """自然语言点歌的子目录候选名列表：原名 + 逐层剥离口头后缀的变体。
-
-    例：「日语歌」→ [日语歌, 日语]；「经典歌曲」→ [经典歌曲, 经典]。
-    剥到空串为止，原名始终排第一。
-    """
-    cands = [name]
-    cur = name
-    while True:
-        for suf in SUBDIR_SUFFIXES:
-            if cur.endswith(suf) and len(cur) > len(suf):
-                cur = cur[:-len(suf)]
-                cands.append(cur)
-                break
-        else:
-            return cands
-
-
 def _ratio(a: str, b: str) -> float:
     """相似度：difflib SequenceMatcher.ratio（比 quick_ratio 更准，字符串很短够快）。"""
     return SequenceMatcher(None, a, b).ratio()
@@ -210,33 +189,69 @@ class MusicLibrary:
         """归一化（见模块级 fold）：去空格/标点/大小写/全角、假名转罗马音。"""
         return fold(s)
 
-    def _score(self, q: str, fq: list, ft: str, fa: str, fstem: str) -> float:
-        """给单首歌曲打分：q=归一化查询(歌名部分)，fq=查询里的歌手限定，ft/fa=曲名/歌手。"""
+    def _score(self, q: str, fq: list, ft: str, fa: str, fstem: str):
+        """严格档打分。返回 (score, by_title)；未命中返回 (0.0, False)。
+
+        by_title 标记分数是否来自**曲名**——resolve_target 需要它区分
+        「用歌手名搜索」（来一首F4 → by_title=False）与「真的在点歌名」。
+        """
         # 查询带歌手限定时，歌手对不上的直接淘汰（避免「邓紫棋的泡沫」命中别人歌）
         if fq and not all(self._soft_hit(a, fa) or self._soft_hit(a, fstem)
                           for a in fq):
-            return 0.0
+            return 0.0, False
         if ft == q:
-            score = 5.5
+            score, by_title = 5.5, True
         elif ft.startswith(q):
-            score = 4.5
+            score, by_title = 4.5, True
         elif q in ft:
-            score = 4.0
+            score, by_title = 4.0, True
         elif fa and fa == q:
-            score = 3.2          # 直接以歌手名搜索（「来一首周杰伦」）
+            score, by_title = 3.2, False   # 直接以歌手名搜索（「来一首周杰伦」）
         elif fstem == q:
-            score = 5.0          # 「歌手 - 歌名」整名精确
+            score, by_title = 5.0, True    # 「歌手 - 歌名」整名精确
         elif q in fstem:
-            score = 2.6
+            score, by_title = 2.6, True
         elif fa and len(q) >= 3 and _coverage(q, fa) >= 0.62:
-            score = 3.0          # 歌手名错别字（「邓紫琪」→「G.E.M.邓紫棋」）
+            score, by_title = 3.0, False   # 歌手名错别字（「邓紫琪」→G.E.M.邓紫棋）
         else:
-            r = max(_ratio(q, ft), _ratio(q, fstem))
-            thr = 0.5 if len(q) <= 3 else 0.62   # 短词放宽（错一字仍可命中）
-            score = 1.0 + r if r >= thr else 0.0
+            return 0.0, False
         if score and fq:
             score += 1.5          # 歌手限定命中，加分压过同名歧义
-        return score
+        return score, by_title
+
+    def _score_loose(self, q: str, fq: list, ft: str, fa: str, fstem: str) -> float:
+        """兜底档打分：子串与相似度近似，命中即返回正分（保证「总能返回一首歌」）。
+
+        优先级：歌手限定下的曲名子串 > 整名子串 > 曲名相似度 > 歌手名相似度。
+        分数统一压在严格档之下（最高 1.9），排序时永远不会抢走精确命中。
+        """
+        # 有歌手限定时不参与兜底——限定不符就不是它，宁可让严格档报"没找到"
+        if fq:
+            return 0.0
+        # 查询 ≥2 字且是曲名/整名的子串：「白金」→ 白金ディスコ，「喜欢你」→ …喜欢你
+        if len(q) >= 2:
+            if q in ft:
+                return 1.8
+            if q in fstem:
+                return 1.5
+        # 存在子串关系时 ratio 天然偏高（已被上面的子串档覆盖，这里只做兜底），
+        # 歌手名近似同理排除——否则「喜欢你」会被歌手「偏偏喜欢你」劫持
+        r = max(_ratio(q, ft), _ratio(q, fstem))
+        if fa and (q in fa or fa in q):
+            r = max(r, 0.0)
+        # 短查询（2~3 字）阈值放宽到 0.45：错一字/两字仍应给候选
+        thr = 0.45 if len(q) <= 3 else 0.55
+        if r >= thr:
+            return 0.5 + r
+        # 曲名里含查询的多数字符（顺序可乱）：「流星雨歌」→「流星雨」
+        if len(q) >= 3 and _coverage(q, ft) >= 0.8:
+            return 0.9
+        # 歌手名近似：「邓紫琪」这类错字，且曲名与查询有一定重合。
+        # 查询是歌手名的子串时不算（那是歌名检索，见 resolve_artist 同处注释）
+        if (fa and len(q) >= 3 and q not in fa and fa not in q
+                and _coverage(q, fa) >= 0.62):
+            return 0.8
+        return 0.0
 
     @staticmethod
     def _soft_hit(a: str, b: str) -> bool:
@@ -245,11 +260,16 @@ class MusicLibrary:
             return False
         return a == b or a in b or b in a or _ratio(a, b) >= 0.6
 
-    def match(self, query: str, limit: int = 5) -> list:
+    def match(self, query: str, limit: int = 5, with_source: bool = False) -> list:
         """歌名/歌手模糊匹配，返回 [(path, score), ...] 按分数降序。
 
+        with_source=True 时额外返回 (results, top_is_title)：最高分是否来自曲名
+        而非歌手名，供 request.resolve_target 区分「点歌名」与「按歌手随机」。
+
         支持「泡沫」「邓紫棋的泡沫」「邓紫棋 泡沫」「白金disco（→白金ディスコ）」
-        「F4」（歌手名）等写法；多首时取最高分。
+        「白金」（子串兜底）「白金 disco」（多段合并）「F4」（歌手名）等写法；
+        一次遍历三档打分：严格档 → 多段合并 → 低阈值兜底，
+        只要曲库里有近似歌曲就返回结果，不轻易让用户得到"没找到"。
         """
         raw = (query or "").strip()
         if not raw:
@@ -261,6 +281,12 @@ class MusicLibrary:
         q = fold_match(title_q)
         if not q:
             return []
+        # 多段查询合并形态：「白金 disco」→ 白金disco。用户分两段打，
+        # 但曲名里没有空格，此时前段不是歌手限定（严格档会全灭），
+        # 用合并形态再打一次档，避免"分段输入就查不到"。
+        merged = fold_match(_TOKEN_SEP.sub("", raw)) if len(toks) > 1 else ""
+        fq_merged = []          # 合并形态不再带歌手限定
+
         scored = []
         for path in self.files:
             stem = os.path.splitext(os.path.basename(path))[0]
@@ -268,12 +294,24 @@ class MusicLibrary:
             ft, fa = fold_match(title), fold_match(artist)
             if not ft and not fa:
                 continue
-            score = self._score(q, fq, ft, fa, fold_match(stem))
+            fstem = fold_match(stem)
+            score, by_title = self._score(q, fq, ft, fa, fstem)
+            # 合并形态不携带歌手限定，否则「白金 disco」会把唯一的候选判死
+            if score <= 0 and merged:
+                score, by_title = self._score(merged, fq_merged, ft, fa, fstem)
+            if score <= 0:
+                alt = merged if (merged and fq) else q
+                score = self._score_loose(alt, fq_merged if fq else fq,
+                                          ft, fa, fstem)
+                by_title = score > 0     # 兜底档一律按歌名处理
             if score > 0:
-                scored.append((path, score))
+                scored.append((path, score, by_title))
         scored.sort(key=lambda x: (-x[1], len(os.path.basename(x[0])),
                                    os.path.basename(x[0])))
-        return scored[:limit]
+        top = scored[:limit]
+        if with_source:
+            return [(p, s) for p, s, _ in top],                    bool(top and top[0][2])
+        return [(p, s) for p, s, _ in top]
 
     def display_name(self, path: str) -> str:
         """展示用歌名：去掉「歌手 - 」前缀，只留曲名。"""
@@ -292,7 +330,15 @@ class MusicLibrary:
         return sorted(seen)
 
     def resolve_artist(self, name: str) -> str | None:
-        """把输入解析为曲库内实际歌手名（归一化精确 → 互含 → 相似度≥0.6）。"""
+        """把输入解析为曲库内实际歌手名。
+
+        三级回落：归一化精确 → 歌手名的超集（输入带修饰后缀）→ 近似
+        （相似度 ≥0.7，或覆盖率 ≥0.62 容忍错别字，如「邓紫琪」）。
+
+        互含只处理「输入是歌手名的扩展」这一个方向（「Beyond乐队」「F4天团」）；
+        反方向不做——输入更短、只是歌手名的子串时（「喜欢你」⊂「偏偏喜欢你」），
+        那几乎总是歌名检索需求，应交给 match()，否则歌名永远被长歌手名劫持。
+        """
         target = fold_match(name)
         if not target:
             return None
@@ -302,14 +348,27 @@ class MusicLibrary:
                 return a
         for a in arts:
             fa = fold_match(a)
-            if target in fa or fa in target:
+            if fa in target and len(target) <= len(fa) * 1.5:
                 return a
-        best, best_r = None, 0.0
+        best, best_r, best_cov_name, best_cov = None, 0.0, None, 0.0
         for a in arts:
-            r = _ratio(target, fold_match(a))
+            fa = fold_match(a)
+            r = _ratio(target, fa)
+            # 存在子串关系时 ratio 天然偏高（「喜欢你」vs「偏偏喜欢你」=0.75，
+            # 会被误判成同名歌手），这类查询一律不算歌手近似，交给 match()
+            # 按歌名检索。真正的错别字（邓紫琪 vs G.E.M.邓紫棋）没有子串关系，
+            # 仍按覆盖率命中。
+            cov = _coverage(target, fa)
             if r > best_r:
                 best, best_r = a, r
-        return best if best_r >= 0.7 else None    # 0.7 以上才算同名，避免张冠李戴
+            if cov > best_cov:
+                best_cov_name, best_cov = a, cov
+        # 阈值口径与 match() 的歌手错别字档一致：≥3 字按覆盖率 0.62 容忍错字
+        # （返回覆盖率最高的那位歌手），短词仍要求 0.7 相似度，
+        # 否则「王」会命中所有含「王」的歌手
+        if len(target) >= 3 and best_cov >= 0.62:
+            return best_cov_name
+        return best if best_r >= 0.7 else None    # 否则要 0.7 以上才算同名
 
     # ------------------------------------------------------------ 随机
 
