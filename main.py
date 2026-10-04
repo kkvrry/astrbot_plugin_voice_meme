@@ -10,6 +10,7 @@
   music/library.py  音乐曲库（扫描/匹配/随机）
   music/clip.py     副歌定位与裁剪（分析+转码一体）
   music/request.py  自然语言点歌解析（「[给XX]来一首/奏乐」句式）
+  music/bilibili.py B站点歌兜底（曲库未命中时搜索下载首个结果）
 """
 
 import os
@@ -51,8 +52,16 @@ except Exception:
     MusicLibrary = None
     _MUSIC_OK = False
 
+# B 站点歌兜底：曲库未命中时联网搜索（requests 缺失时静默禁用兜底）
+try:
+    from core.music import bilibili as song_bili
+    _BILI_OK = _MUSIC_OK  # 兜底产物要走同一套副歌裁剪，跟随音乐可用性
+except Exception:
+    song_bili = None
+    _BILI_OK = False
 
-@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.11.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+
+@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.12.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -89,6 +98,9 @@ class SgsVoiceMeme(Star):
         # 音乐曲库（惰性创建，reload 时置空重建）
         self._music_lib = None
         self._music_clip_dir = os.path.join(self.data_dir, "cache_clip")
+        # B 站兜底：cookie 与下载缓存目录
+        self._bili_cookie_file = os.path.join(self.data_dir, "bilibili_cookie.json")
+        self._bili_cache_dir = os.path.join(self.data_dir, "cache_online")
 
         # 清理过期音频缓存
         self._cleanup_cache()
@@ -173,8 +185,14 @@ class SgsVoiceMeme(Star):
                 matches = [(p, s) for p, s in matches if p in keep]
             if not matches:
                 scope = f"（{subdir or artist}）" if (subdir or artist) else ""
-                yield event.plain_result(
-                    f"❌ 曲库里没找到「{query}」{scope}，换个更完整的关键词试试。")
+                if scope:
+                    # 限定范围（子目录/歌手）内未命中不联网兜底，保持语义精确
+                    yield event.plain_result(
+                        f"❌ 曲库里没找到「{query}」{scope}，换个更完整的关键词试试。")
+                    return
+                async for r in self._handle_bilibili_fallback(
+                        event, query, full=full, recipient=recipient):
+                    yield r
                 return
             # 多首匹配时直接取得分最高的第一首，不再要求手动精确选择
             song_path = matches[0][0]
@@ -200,14 +218,8 @@ class SgsVoiceMeme(Star):
         # 完整文件模式：跳过副歌分析，直接以文件形式发送原曲
         if full:
             logger.info(f"[语音罐头] 完整音乐: {stem}")
-            yield event.plain_result(tip)
-            try:
-                yield event.chain_result([
-                    Comp.File(file=song_path, name=os.path.basename(song_path))
-                ])
-            except Exception as e:
-                logger.error(f"[语音罐头] 完整歌曲发送失败: {e}")
-                yield event.plain_result("❌ 完整歌曲发送失败。")
+            async for r in self._send_full_song(event, song_path, tip):
+                yield r
             return
 
         logger.info(f"[语音罐头] 音乐播放: {stem} (来源: {src})")
@@ -225,10 +237,17 @@ class SgsVoiceMeme(Star):
             return
 
         clip_path = result["clip_path"]
-        # 副歌片段播放提示（裁剪模式下用「献上」措辞）
+        async for r in self._send_music_clip(event, clip_path, title, recipient):
+            yield r
+
+    async def _send_music_clip(self, event: AstrMessageEvent, clip_path: str,
+                               title: str, recipient: str = "",
+                               source: str = ""):
+        """发送副歌语音：提示语（裁剪模式用「献上」措辞）→ Record 直发 → WAV 回落。"""
+        tag = f"（{source}）" if source else ""
         yield event.plain_result(
-            f"🎵 为{recipient}献上一首《{title}》" if recipient
-            else f"🎵 正在播放《{title}》片段")
+            f"🎵 为{recipient}献上一首《{title}》{tag}" if recipient
+            else f"🎵 正在播放《{title}》片段{tag}")
         try:
             yield event.chain_result([Comp.Record(file=clip_path, url=clip_path)])
         except Exception as e:
@@ -240,6 +259,71 @@ class SgsVoiceMeme(Star):
             except Exception as e2:
                 logger.error(f"[语音罐头] 音乐发送失败: {e2}")
                 yield event.plain_result("❌ 音乐片段发送失败。")
+
+    async def _send_full_song(self, event: AstrMessageEvent, song_path: str,
+                              tip: str):
+        """以文件形式发送完整歌曲。"""
+        yield event.plain_result(tip)
+        try:
+            yield event.chain_result([
+                Comp.File(file=song_path, name=os.path.basename(song_path))
+            ])
+        except Exception as e:
+            logger.error(f"[语音罐头] 完整歌曲发送失败: {e}")
+            yield event.plain_result("❌ 完整歌曲发送失败。")
+
+    async def _handle_bilibili_fallback(self, event: AstrMessageEvent,
+                                        query: str, full: bool = False,
+                                        recipient: str = ""):
+        """曲库未命中时的 B 站兜底：搜索第一个结果下载音频，走同一套发送链路。
+
+        full=True 以文件发送完整歌曲，否则裁剪副歌后以语音发送。
+        下载按 bvid 落盘缓存（cache_online），重复点播不重复下载。
+        """
+        if not _BILI_OK or song_bili is None:
+            yield event.plain_result(
+                f"❌ 曲库里没找到「{query}」，换个更完整的关键词试试。")
+            return
+        yield event.plain_result(f"🔍 曲库里没有「{query}」，正在从B站搜索…")
+        try:
+            meta = await asyncio.to_thread(
+                song_bili.fetch_first_audio,
+                query, self._bili_cookie_file, self._bili_cache_dir,
+            )
+        except Exception as e:
+            logger.warning(f"[语音罐头] B站兜底失败: {e}")
+            yield event.plain_result(
+                f"❌ 曲库里没找到「{query}」，B站搜索也不顺利：{e}")
+            return
+
+        song_path = meta["path"]
+        title = meta["title"]
+        who = f"为{recipient}" if recipient else ""
+        tag = "（B站）"
+        if full:
+            logger.info(f"[语音罐头] 完整音乐(B站): {meta['bvid']} {title}")
+            tip = (f"📀 {who}献上完整歌曲《{title}》{tag}" if who
+                   else f"📀 正在发送完整歌曲《{title}》{tag}")
+            async for r in self._send_full_song(event, song_path, tip):
+                yield r
+            return
+
+        logger.info(f"[语音罐头] 音乐播放(B站): {meta['bvid']} {title}")
+        try:
+            result = await asyncio.to_thread(
+                song_clip.find_chorus_clip, song_path,
+                float(self.music_clip_max_sec), "mp3", self._music_clip_dir,
+            )
+        except Exception as e:
+            logger.error(f"[语音罐头] 副歌提取异常: {e}")
+            result = None
+        if not result or not os.path.isfile(result["clip_path"]):
+            yield event.plain_result(f"❌「{title}」副歌提取失败，稍后再试试。")
+            return
+        clip_path = result["clip_path"]
+        async for r in self._send_music_clip(event, clip_path, title,
+                                             recipient, source="B站"):
+            yield r
 
     def _cleanup_music_cache(self):
         """清理副歌片段/分析缓存：按 cache_max_days 过期删除（0 为关闭清理）。"""
