@@ -30,17 +30,22 @@ class FakeResp:
 
 
 class FakeSession:
-    """最小化 session 替身：按 URL 返回预置 payload。"""
+    """最小化 session 替身：按 URL 返回预置 payload；可按关键词区分响应。"""
 
-    def __init__(self, payloads):
+    def __init__(self, payloads, by_keyword=None):
         self._payloads = payloads  # {url片段: payload}
+        self._by_keyword = by_keyword or {}  # {关键词片段: payload}
         self.headers = {}
 
     def get(self, url, **kwargs):
+        keyword = str(kwargs.get("params", {}).get("keyword", ""))
+        for frag, payload in self._by_keyword.items():
+            if frag in keyword:
+                return FakeResp(payload)
         for frag, payload in self._payloads.items():
             if frag in url:
                 return FakeResp(payload)
-        raise AssertionError(f"unexpected url: {url}")
+        raise AssertionError(f"unexpected url: {url} keyword={keyword}")
 
 
 def main():
@@ -63,7 +68,13 @@ def main():
     check("文件名截断80", len(long_fn) - len("-BV1xx411c7mD.mp3") <= 80 * 3)  # utf-8 中文按字符截断
     check("空标题兜底", bili.safe_filename("", "BV1") == "bilibili-BV1.mp3")
 
-    # 3) _search_first：取第一个视频结果、跳过非视频、HTML 高亮剥离
+    # 3) search_queries：候选词生成与后缀去重
+    check("候选词拼接歌曲", bili.search_queries("晴天") == ["晴天 歌曲", "晴天"])
+    check("候选词已带后缀不拼", bili.search_queries("晴天 完整版") == ["晴天 完整版"])
+    check("候选词后缀MV", bili.search_queries("Bruno Mars MV") == ["Bruno Mars MV"])
+    check("候选词空输入", bili.search_queries("") == [])
+
+    # 4) _search_first：取第一个视频结果、跳过非视频、HTML 高亮剥离、候选词回退
     payloads = {
         "search/type": {"code": 0, "data": {"result": [
             {"type": "activity_mar", "bvid": "BVad", "title": "广告"},
@@ -83,7 +94,30 @@ def main():
     check("搜索标题剥离HTML", first and "<em" not in first["title"] and " " in first["title"])
     check("搜索UP主缺省", first and first["uploader"] == "某UP")
 
-    # 4) _search_first：空结果 / 接口报错
+    # 5) _search_first：候选词顺序与回退（首选词无结果时用原始词）
+    nav5 = {"code": 0, "data": {"wbi_img": {
+        "img_url": "https://i0.hdslb.com/bfs/wbi/abc123def456abc123def456abc123de.png",
+        "sub_url": "https://i0.hdslb.com/bfs/wbi/987654321098765432109876543210ab.png",
+    }}}
+    ordered = FakeSession(
+        {"web-interface/nav": nav5},
+        by_keyword={
+            "晴天 歌曲": {"code": 0, "data": {"result": []}},
+            "晴天": {"code": 0, "data": {"result": [
+                {"type": "video", "bvid": "BVraw", "title": "晴天", "author": "周"}]}},
+        })
+    got = bili._search_first(ordered, "晴天")
+    check("候选词回退原始词", got is not None and got["bvid"] == "BVraw", str(got))
+    hit_first = FakeSession(
+        {"web-interface/nav": nav5},
+        by_keyword={
+            "晴天 歌曲": {"code": 0, "data": {"result": [
+                {"type": "video", "bvid": "BVsong", "title": "晴天 歌曲", "author": "周"}]}},
+        })
+    got2 = bili._search_first(hit_first, "晴天")
+    check("候选词首选命中", got2 is not None and got2["bvid"] == "BVsong", str(got2))
+
+    # 6) _search_first：空结果 / 接口报错
     nav = {"code": 0, "data": {"wbi_img": {
         "img_url": "https://i0.hdslb.com/bfs/wbi/abc123def456abc123def456abc123de.png",
         "sub_url": "https://i0.hdslb.com/bfs/wbi/987654321098765432109876543210ab.png",

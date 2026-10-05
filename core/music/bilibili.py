@@ -44,6 +44,10 @@ _WBI_FILTER_RE = re.compile(r"[!'()*]")
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+#: 查询已带音乐类后缀时不重复拼接「歌曲」（尾缀匹配，忽略大小写）
+_MUSIC_SUFFIX_RE = re.compile(
+    r"(歌曲|音乐|伴奏|原唱|翻唱|完整版|无损|hi-?res|mv|cover|歌)\s*$", re.IGNORECASE)
+
 #: 下载体积硬上限（防异常大文件写满磁盘）
 _MAX_AUDIO_BYTES = 200 * 1024 * 1024
 
@@ -124,11 +128,20 @@ def _api_data(session, url: str, params: dict) -> dict:
     return payload.get("data") or {}
 
 
-def _search_first(session, query: str) -> dict | None:
-    """搜索视频并返回第一个结果 {bvid, title, uploader}；无结果返回 None。"""
+def search_queries(query: str) -> list[str]:
+    """生成搜索候选词：优先「<query> 歌曲」让首条结果偏向歌曲而非翻跳/混剪，
+    无结果时回退原始词。查询本身已带音乐类后缀则只搜原始词。"""
+    q = str(query or "").strip()
+    if not q or _MUSIC_SUFFIX_RE.search(q):
+        return [q] if q else []
+    return [f"{q} 歌曲", q]
+
+
+def _search_videos(session, keyword: str) -> dict | None:
+    """单次搜索，返回第一个视频结果 {bvid, title, uploader}；无结果返回 None。"""
     data = _api_data(session, _SEARCH_URL, {
         "search_type": "video",
-        "keyword": query,
+        "keyword": keyword,
         "order": "totalrank",
         "duration": 0,
         "tids": 0,
@@ -149,6 +162,15 @@ def _search_first(session, query: str) -> dict | None:
                 "title": title,
                 "uploader": _strip_html(raw.get("author")) or "未知UP",
             }
+    return None
+
+
+def _search_first(session, query: str) -> dict | None:
+    """按候选词依次搜索，返回首个命中结果；全部为空返回 None。"""
+    for keyword in search_queries(query):
+        first = _search_videos(session, keyword)
+        if first:
+            return first
     return None
 
 
