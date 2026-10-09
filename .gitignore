@@ -20,3 +20,6 @@ desktop.ini
 .vscode/
 *.swp
 *.swo
+
+# WorkBuddy 本地工作日志（内部笔记，不入仓库）
+.workbuddy/
