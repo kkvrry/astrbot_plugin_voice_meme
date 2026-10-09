@@ -10,7 +10,7 @@
   music/library.py  音乐曲库（扫描/匹配/随机）
   music/clip.py     副歌定位与裁剪（分析+转码一体）
   music/request.py  自然语言点歌解析（「[给XX]来一首/奏乐」句式）
-  music/bilibili.py B站点歌兜底（曲库未命中时搜索下载首个结果）
+  music/bilibili.py B站点歌兜底（搜索前3条候选，LLM 挑选后下载）
 """
 
 import os
@@ -61,7 +61,7 @@ except Exception:
     _BILI_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.12.1", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.13.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -275,10 +275,10 @@ class SgsVoiceMeme(Star):
     async def _handle_bilibili_fallback(self, event: AstrMessageEvent,
                                         query: str, full: bool = False,
                                         recipient: str = ""):
-        """曲库未命中时的 B 站兜底：搜索第一个结果下载音频，走同一套发送链路。
+        """曲库未命中时的 B 站兜底：搜索前3条候选由 LLM 挑选，下载后走同一套发送链路。
 
         full=True 以文件发送完整歌曲，否则裁剪副歌后以语音发送。
-        下载按 bvid 落盘缓存（cache_online），重复点播不重复下载。
+        下载按 bvid 落盘缓存（cache_online），重复点播不重复下载（LLM 也只跑一次）。
         """
         if not _BILI_OK or song_bili is None:
             yield event.plain_result(
@@ -286,29 +286,38 @@ class SgsVoiceMeme(Star):
             return
         yield event.plain_result(f"🔍 曲库里没有「{query}」，正在从B站搜索…")
         try:
-            meta = await asyncio.to_thread(
-                song_bili.fetch_first_audio,
-                query, self._bili_cookie_file, self._bili_cache_dir,
-            )
+            pick = song_bili.resolve_cached(query, self._bili_cache_dir)
+            if pick is None:
+                cands = await asyncio.to_thread(
+                    song_bili.search_candidates,
+                    query, self._bili_cookie_file, 3,
+                )
+                if len(cands) > 1:
+                    yield event.plain_result("🤖 正在从候选中挑选最适合点歌的一首…")
+                pick = cands[await self._pick_index(query, cands)]
+                pick = await asyncio.to_thread(
+                    song_bili.download_pick,
+                    query, pick, self._bili_cookie_file, self._bili_cache_dir,
+                )
         except Exception as e:
             logger.warning(f"[语音罐头] B站兜底失败: {e}")
             yield event.plain_result(
                 f"❌ 曲库里没找到「{query}」，B站搜索也不顺利：{e}")
             return
 
-        song_path = meta["path"]
-        title = meta["title"]
+        song_path = pick["path"]
+        title = pick["title"]
         who = f"为{recipient}" if recipient else ""
         tag = "（B站）"
         if full:
-            logger.info(f"[语音罐头] 完整音乐(B站): {meta['bvid']} {title}")
+            logger.info(f"[语音罐头] 完整音乐(B站): {pick['bvid']} {title}")
             tip = (f"📀 {who}献上完整歌曲《{title}》{tag}" if who
                    else f"📀 正在发送完整歌曲《{title}》{tag}")
             async for r in self._send_full_song(event, song_path, tip):
                 yield r
             return
 
-        logger.info(f"[语音罐头] 音乐播放(B站): {meta['bvid']} {title}")
+        logger.info(f"[语音罐头] 音乐播放(B站): {pick['bvid']} {title}")
         try:
             result = await asyncio.to_thread(
                 song_clip.find_chorus_clip, song_path,
@@ -324,6 +333,34 @@ class SgsVoiceMeme(Star):
         async for r in self._send_music_clip(event, clip_path, title,
                                              recipient, source="B站"):
             yield r
+
+    async def _pick_index(self, query: str, candidates: list) -> int:
+        """用 AstrBot 默认 LLM 从候选中挑最适合点歌的一条，返回下标；失败取首条。"""
+        provider = self.context.get_using_provider()
+        if provider is None or len(candidates) <= 1:
+            return 0
+        listing = "\n".join(
+            f"{i}. {c['title']}（UP：{c['uploader']}）"
+            for i, c in enumerate(candidates, start=1))
+        prompt = (
+            f"B站搜索「{query}」返回了以下 {len(candidates)} 个视频：\n"
+            f"{listing}\n\n"
+            "请选出最适合点歌播放的一个：歌曲原唱、翻唱、二创、鬼畜、"
+            "搞笑向等能直接听的内容都可以；排除纯图集、直播回放片段、"
+            "教学/ reaction / 无音频流等不适合听的内容。\n"
+            f"只回复一个编号（1-{len(candidates)}），不要任何其他文字。")
+        try:
+            resp = await provider.text_chat(
+                prompt=prompt,
+                system_prompt="你是点歌助手。只回复一个编号数字，不要任何其他内容。",
+            )
+            idx = song_bili.parse_pick(resp.completion_text, len(candidates))
+            if idx:
+                logger.info(f"[语音罐头] LLM 点歌挑选: {idx}/{len(candidates)}")
+                return idx - 1
+        except Exception as e:
+            logger.warning(f"[语音罐头] LLM 挑选失败，取首条: {e}")
+        return 0
 
     def _cleanup_music_cache(self):
         """清理副歌片段/分析缓存：按 cache_max_days 过期删除（0 为关闭清理）。"""

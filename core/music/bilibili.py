@@ -1,10 +1,10 @@
-"""B 站点歌兜底：本地曲库没有时，搜索 B 站并下载第一个结果的音频。
+"""B 站点歌兜底：本地曲库没有时，搜索 B 站取前几条候选，由 LLM 挑选后下载音频。
 
-链路：WBI 签名搜索 → 取第一个视频 → 解析 DASH 音轨 → 下载 m4a
-→ ffmpeg 转 mp3（192k，与本地裁剪输出同级音质）→ 交给副歌裁剪/文件发送。
+链路：WBI 签名搜索（取前 N 条）→ LLM 选出最适合点歌的一条（无 LLM 时取首条）
+→ 解析 DASH 音轨 → 下载 m4a → ffmpeg 转 mp3（192k）→ 交给副歌裁剪/文件发送。
 
-按 bvid 落盘缓存：同一首歌重复点播不重复下载，且稳定的文件路径
-可复用 clip.py 基于「路径+mtime+size」的副歌分析缓存。
+按 bvid 落盘缓存：同一首歌重复点播不重复下载（LLM 也只跑一次），且稳定的文件
+路径可复用 clip.py 基于「路径+mtime+size」的副歌分析缓存。
 
 Cookie：从 data_dir/bilibili_cookie.json 读取（JSON: {"cookie": "..."}）。
 未配置 Cookie 时仍会尝试（部分视频无需登录即可解析），失败时给出明确提示。
@@ -43,10 +43,6 @@ _MIXIN_INDICES = (
 _WBI_FILTER_RE = re.compile(r"[!'()*]")
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
-
-#: 查询已带音乐类后缀时不重复拼接「歌曲」（尾缀匹配，忽略大小写）
-_MUSIC_SUFFIX_RE = re.compile(
-    r"(歌曲|音乐|伴奏|原唱|翻唱|完整版|无损|hi-?res|mv|cover|歌)\s*$", re.IGNORECASE)
 
 #: 下载体积硬上限（防异常大文件写满磁盘）
 _MAX_AUDIO_BYTES = 200 * 1024 * 1024
@@ -128,50 +124,61 @@ def _api_data(session, url: str, params: dict) -> dict:
     return payload.get("data") or {}
 
 
-def search_queries(query: str) -> list[str]:
-    """生成搜索候选词：优先「<query> 歌曲」让首条结果偏向歌曲而非翻跳/混剪，
-    无结果时回退原始词。查询本身已带音乐类后缀则只搜原始词。"""
-    q = str(query or "").strip()
-    if not q or _MUSIC_SUFFIX_RE.search(q):
-        return [q] if q else []
-    return [f"{q} 歌曲", q]
-
-
-def _search_videos(session, keyword: str) -> dict | None:
-    """单次搜索，返回第一个视频结果 {bvid, title, uploader}；无结果返回 None。"""
+def _search_top(session, query: str, limit: int = 3) -> list[dict]:
+    """搜索视频并返回前 limit 条结果 [{bvid, title, uploader}]。"""
     data = _api_data(session, _SEARCH_URL, {
         "search_type": "video",
-        "keyword": keyword,
+        "keyword": str(query or "").strip(),
         "order": "totalrank",
         "duration": 0,
         "tids": 0,
         "page": 1,
-        "page_size": 10,
+        "page_size": min(max(1, limit), 20),
     })
     raw_items = data.get("result")
     if not isinstance(raw_items, list):
-        return None
+        return []
+    results = []
     for raw in raw_items:
         if not isinstance(raw, dict) or raw.get("type") not in (None, "video"):
             continue
         bvid = str(raw.get("bvid") or "").strip()
         title = _strip_html(raw.get("title"))
-        if bvid and title:
-            return {
-                "bvid": bvid,
-                "title": title,
-                "uploader": _strip_html(raw.get("author")) or "未知UP",
-            }
-    return None
+        if not (bvid and title):
+            continue
+        results.append({
+            "bvid": bvid,
+            "title": title,
+            "uploader": _strip_html(raw.get("author")) or "未知UP",
+        })
+        if len(results) >= limit:
+            break
+    return results
 
 
-def _search_first(session, query: str) -> dict | None:
-    """按候选词依次搜索，返回首个命中结果；全部为空返回 None。"""
-    for keyword in search_queries(query):
-        first = _search_videos(session, keyword)
-        if first:
-            return first
-    return None
+def search_candidates(query: str, cookie_file: str | None,
+                      limit: int = 3, session=None) -> list[dict]:
+    """搜索并返回前 limit 条候选（供 LLM 挑选）；无结果抛 RuntimeError。
+
+    session 供测试注入替身；生产留空时按 cookie_file 自建会话。
+    """
+    if not str(query or "").strip():
+        raise RuntimeError("搜索关键词为空")
+    if session is None:
+        session = _session(_load_cookie(cookie_file))
+    results = _search_top(session, query, limit)
+    if not results:
+        raise RuntimeError("B站没有搜到相关视频")
+    return results
+
+
+def parse_pick(text: str, n: int) -> int | None:
+    """从 LLM 回复中解析候选编号（1..n），无有效编号返回 None。"""
+    m = re.search(r"\d+", str(text or ""))
+    if not m:
+        return None
+    idx = int(m.group())
+    return idx if 1 <= idx <= n else None
 
 
 def _audio_track(session, bvid: str) -> tuple[str, str]:
@@ -251,40 +258,37 @@ def _download_audio(session, url: str, bvid: str, dst: str) -> None:
             pass
 
 
-def fetch_first_audio(query: str, cookie_file: str | None,
-                      save_dir: str) -> dict:
-    """搜索 B 站并获取第一个结果的音频。
+def resolve_cached(query: str, save_dir: str) -> dict | None:
+    """查询关键词已有下载缓存（query → bvid 索引命中）时直接返回元数据。"""
+    query = str(query or "").strip()
+    if not query:
+        return None
+    try:
+        with open(os.path.join(save_dir, "_index.json"), encoding="utf-8") as fp:
+            index = json.load(fp)
+        bvid = str(index.get(query) or "").strip()
+        if bvid:
+            return _load_cached(save_dir, bvid)
+    except Exception:
+        pass
+    return None
+
+
+def download_pick(query: str, pick: dict, cookie_file: str | None,
+                  save_dir: str) -> dict:
+    """下载选定候选的音频（选自 search_candidates / LLM 挑选）。
 
     返回 {"path": mp3路径, "title": 标题, "uploader": UP主, "bvid": bvid}。
     按 bvid 落盘缓存（<save_dir>/<bvid>.mp3 + .json 元数据），重复点播直接复用。
     抛 RuntimeError 携带面向用户的失败原因。
     """
     query = str(query or "").strip()
-    if not query:
-        raise RuntimeError("搜索关键词为空")
+    bvid = str((pick or {}).get("bvid") or "").strip()
+    if not (query and bvid):
+        raise RuntimeError("点歌候选无效")
 
     os.makedirs(save_dir, exist_ok=True)
-
-    # 已缓存（按 bvid）时先查元数据索引：query → bvid
     meta_index = os.path.join(save_dir, "_index.json")
-    cached = None
-    try:
-        with open(meta_index, encoding="utf-8") as fp:
-            index = json.load(fp)
-        bvid = str(index.get(query) or "").strip()
-        if bvid:
-            cached = _load_cached(save_dir, bvid)
-    except Exception:
-        cached = None
-    if cached:
-        return cached
-
-    session = _session(_load_cookie(cookie_file))
-    first = _search_first(session, query)
-    if not first:
-        raise RuntimeError("B站没有搜到相关视频")
-    bvid = first["bvid"]
-    title = first["title"]
 
     # 音频文件已存在（别的关键词点过同一首）→ 直接复用
     cached = _load_cached(save_dir, bvid)
@@ -292,6 +296,8 @@ def fetch_first_audio(query: str, cookie_file: str | None,
         _save_index(meta_index, query, bvid)
         return cached
 
+    title = str(pick.get("title") or bvid)
+    session = _session(_load_cookie(cookie_file))
     url, page_title = _audio_track(session, bvid)
     if page_title:
         title = page_title  # 详情页标题比搜索结果更干净（无高亮标签）
@@ -309,7 +315,8 @@ def fetch_first_audio(query: str, cookie_file: str | None,
     if not os.path.isfile(dst) or os.path.getsize(dst) <= 0:
         raise RuntimeError("音频转码失败")
 
-    meta = {"path": dst, "title": title, "uploader": first["uploader"], "bvid": bvid}
+    meta = {"path": dst, "title": title, "uploader": pick.get("uploader") or "未知UP",
+            "bvid": bvid}
     try:
         with open(os.path.join(save_dir, f"{bvid}.json"), "w", encoding="utf-8") as fp:
             json.dump(meta, fp, ensure_ascii=False)
