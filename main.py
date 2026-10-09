@@ -61,7 +61,7 @@ except Exception:
     _BILI_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.13.1", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.13.2", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -343,12 +343,14 @@ class SgsVoiceMeme(Star):
             f"{i}. {c['title']}（UP：{c['uploader']}）"
             for i, c in enumerate(candidates, start=1))
         prompt = (
-            f"用户想点歌「{query}」，B站搜索返回了以下 {len(candidates)} 个视频：\n"
+            f"用户想点「{query}」，B站搜索返回了以下 {len(candidates)} 个视频：\n"
             f"{listing}\n\n"
-            "结合用户想听的歌判断哪条最合适：歌曲原唱、翻唱、二创、鬼畜、"
-            "搞笑向等能直接听的内容都可以；排除纯图集、直播回放片段、"
-            "教学/ reaction / 与用户想听的歌无关等不适合听的内容；"
-            "优先选与歌名/歌手完全对应的版本。\n"
+            "先判断用户想听的是什么，内容类型跟随查询意图，不要默认选正经的：\n"
+            "- 查询是正经歌名/歌手名 → 优先原唱、官方MV或高质量翻唱；\n"
+            "- 查询本身是梗名/二创名（如哈基米、曼波之类的鬼畜神曲）→ 优先对应的"
+            "二创、鬼畜、搞笑版本，这时选原唱反而是错的。\n"
+            "原唱、翻唱、二创、鬼畜、搞笑都可以接受，唯独排除纯图集、直播回放片段、"
+            "教学/reaction/与用户意图无关等不适合听的内容。\n"
             f"只回复一个编号（1-{len(candidates)}），不要任何其他文字。")
         try:
             resp = await provider.text_chat(
