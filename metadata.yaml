@@ -3,7 +3,7 @@ display_name: 语音罐头
 short_desc: 群聊语音玩梗 + 音乐点播，一句话触发
 desc: |
   语音玩梗与音乐点播插件。发送角色名或台词关键词即可自动回复对应语音片段，内置三国杀等多语音库，支持外部库目录与模糊匹配；支持「来一首晴天」「给XX奏乐日语歌」等自然语言点歌，曲库自动定位副歌、按段落气口智能裁剪发送，也可点播完整歌曲或指定子目录随机点播。
-version: 1.13.0
+version: 1.13.1
 author: kkvrry
 repo: https://github.com/kkvrry/astrbot_plugin_voice_meme
 support_platforms:

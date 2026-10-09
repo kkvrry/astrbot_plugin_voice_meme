@@ -61,7 +61,7 @@ except Exception:
     _BILI_OK = False
 
 
-@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.13.0", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
+@register("astrbot_plugin_voice_meme", "kkvrry", "语音罐头 - 语音玩梗与音乐点播：角色名/台词关键词触发语音（多语音库），支持自然语言点歌与副歌裁剪", "1.13.1", "https://github.com/kkvrry/astrbot_plugin_voice_meme")
 class SgsVoiceMeme(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -290,7 +290,7 @@ class SgsVoiceMeme(Star):
             if pick is None:
                 cands = await asyncio.to_thread(
                     song_bili.search_candidates,
-                    query, self._bili_cookie_file, 3,
+                    query, self._bili_cookie_file, 5,
                 )
                 if len(cands) > 1:
                     yield event.plain_result("🤖 正在从候选中挑选最适合点歌的一首…")
@@ -343,11 +343,12 @@ class SgsVoiceMeme(Star):
             f"{i}. {c['title']}（UP：{c['uploader']}）"
             for i, c in enumerate(candidates, start=1))
         prompt = (
-            f"B站搜索「{query}」返回了以下 {len(candidates)} 个视频：\n"
+            f"用户想点歌「{query}」，B站搜索返回了以下 {len(candidates)} 个视频：\n"
             f"{listing}\n\n"
-            "请选出最适合点歌播放的一个：歌曲原唱、翻唱、二创、鬼畜、"
+            "结合用户想听的歌判断哪条最合适：歌曲原唱、翻唱、二创、鬼畜、"
             "搞笑向等能直接听的内容都可以；排除纯图集、直播回放片段、"
-            "教学/ reaction / 无音频流等不适合听的内容。\n"
+            "教学/ reaction / 与用户想听的歌无关等不适合听的内容；"
+            "优先选与歌名/歌手完全对应的版本。\n"
             f"只回复一个编号（1-{len(candidates)}），不要任何其他文字。")
         try:
             resp = await provider.text_chat(

@@ -124,7 +124,7 @@ def _api_data(session, url: str, params: dict) -> dict:
     return payload.get("data") or {}
 
 
-def _search_top(session, query: str, limit: int = 3) -> list[dict]:
+def _search_top(session, query: str, limit: int = 5) -> list[dict]:
     """搜索视频并返回前 limit 条结果 [{bvid, title, uploader}]。"""
     data = _api_data(session, _SEARCH_URL, {
         "search_type": "video",
@@ -157,7 +157,7 @@ def _search_top(session, query: str, limit: int = 3) -> list[dict]:
 
 
 def search_candidates(query: str, cookie_file: str | None,
-                      limit: int = 3, session=None) -> list[dict]:
+                      limit: int = 5, session=None) -> list[dict]:
     """搜索并返回前 limit 条候选（供 LLM 挑选）；无结果抛 RuntimeError。
 
     session 供测试注入替身；生产留空时按 cookie_file 自建会话。
